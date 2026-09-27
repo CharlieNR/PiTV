@@ -32,7 +32,8 @@ Screensavers (optional duration in seconds):
   screen matrix [seconds]
 
 Other modes:
-  screen mirror
+  screen music                 AirPlay music receiver + status screen
+  screen mirror                alias for screen music
   screen game <name>   e.g. snake tetris invaders breakout shooter tictactoe
                             tyrian moonbuggy supertux boulderdash 2048 sudoku
                             minesweeper curseofwar nethack crawl dopewars
@@ -329,7 +330,7 @@ case "$CMD" in
         _send "RUN ${CMD^^} ${DUR}"
         ;;
 
-    mirror)
+    music|mirror)
         _send "RUN MIRROR INDEFINITE"
         ;;
 
