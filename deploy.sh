@@ -5,6 +5,18 @@ set -e
 echo "Deploying Pi TV updates..."
 
 # ── AirPlay hardware decoding prerequisites ─────────────────────────
+# Give the Zero 2 W enough GPU memory for the Broadcom video decoder.
+# UxPlay's Raspberry Pi testing found 128 MB worked well on Zero 2 W.
+CONFIG="/boot/firmware/config.txt"
+if [ -f "$CONFIG" ]; then
+    if grep -qE '^[[:space:]]*gpu_mem=' "$CONFIG"; then
+        sudo sed -i -E 's/^[[:space:]]*gpu_mem=.*/gpu_mem=128/' "$CONFIG"
+    else
+        printf '\n# PiTV: GPU memory for AirPlay H.264 hardware decoding\ngpu_mem=128\n'             | sudo tee -a "$CONFIG" >/dev/null
+    fi
+    echo "GPU memory configured to 128 MB (reboot required to apply)."
+fi
+
 # Pi Zero 2 W screen mirroring is dramatically faster with the Broadcom
 # H.264 decoder. UxPlay uses GStreamer's v4l2h264dec/v4l2convert for this.
 echo "Checking PiTV AirPlay hardware-decoding support..."
