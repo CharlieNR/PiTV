@@ -1489,43 +1489,25 @@ def run_mirror(stdscr):
     """
     AirPlay screen mirroring via uxplay.
 
-    Modelled on run_game(): we must release the console (endwin) before
-    starting, because only one program can drive the display device at a
-    time. Previously the mirror screen kept a curses UI refreshing the
-    framebuffer (fbcon) while uxplay's kmssink tried to take the same
-    display — audio streamed but video never showed. Ending curses frees the
-    framebuffer, and 'kmssink force-modesetting=true' lets kmssink set the
-    display mode even though fbcon still owns the console.
+    The menu owns the Linux framebuffer, so curses must release it before
+    uxplay starts. UxPlay then renders directly through kmssink.
+
+    Do NOT give kmssink a fixed portrait render rectangle here. kmssink already
+    calculates a display-size rectangle from the incoming video aspect ratio.
+    That means a portrait iPhone is shown as portrait with black side bars,
+    while rotating the phone to landscape causes the video to use the TV's
+    available width instead. The destination rectangle is recalculated when
+    the incoming video dimensions change.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
-
-    # A phone mirrors in portrait; filling a 16:9 TV stretches it. Render the
-    # stream into a centred, phone-shaped rectangle (black bars at the sides)
-    # by giving kmssink a render-rectangle sized from the real display.
-    def _screen_size():
-        try:
-            with open("/sys/class/graphics/fb0/virtual_size") as f:
-                w, h = (int(v) for v in f.read().strip().split(","))
-                if w > 0 and h > 0:
-                    return w, h
-        except Exception:
-            pass
-        return 1920, 1080
-
-    sw, sh = _screen_size()
-    pw = max(120, int(sh * 9 / 19.5))          # iPhone-ish portrait width
-    px = max(0, (sw - pw) // 2)                 # centre it horizontally
-    portrait_sink   = (f'kmssink force-modesetting=true '
-                       f'render-rectangle=<{px},0,{pw},{sh}>')
-    fullscreen_sink = "kmssink force-modesetting=true"
-    log(f"Mirror: display {sw}x{sh}; portrait rect <{px},0,{pw},{sh}>")
 
     curses.def_prog_mode()
     curses.endwin()
     _reset_terminal()
     os.system("clear")
 
-    if not resolve_binary("uxplay"):
+    uxplay_bin = resolve_binary("uxplay")
+    if not uxplay_bin:
         print("\nuxplay is not installed. Install it with:\n"
               "  sudo apt install uxplay gstreamer1.0-plugins-bad \\\n"
               "      gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly\n"
@@ -1538,7 +1520,9 @@ def run_mirror(stdscr):
     print("AirPlay receiver 'PiTV' is ready.\n"
           "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
           "  (phone and Pi must share the same Wi-Fi network)\n"
-          "The phone appears centred at its own shape; the sides stay black.\n"
+          "The image keeps its original shape and is fitted inside the TV.\n"
+          "Portrait gets black bars at the sides; landscape uses the full width.\n"
+          "Rotate the device and the TV layout follows automatically.\n"
           "Press BACK / B / HOME to stop.\n", flush=True)
 
     try:
@@ -1546,21 +1530,29 @@ def run_mirror(stdscr):
     except Exception:
         logf = subprocess.DEVNULL
 
-    def _launch(sink):
-        return subprocess.Popen(
-            ["uxplay", "-n", "PiTV", "-vs", sink, "-avdec"],
-            stdout=logf, stderr=subprocess.STDOUT,
+    # KMS is the correct videosink for PiTV's framebuffer/console setup.
+    # kmssink calculates the display rectangle from the incoming video aspect
+    # ratio, so there is no fixed portrait box to fight the phone's rotation.
+    video_sink = "kmssink force-modesetting=true"
+    log("Mirror: using KMS fullscreen sink; aspect ratio follows stream")
+
+    proc = None
+    stopped_by_user = False
+    crashed = False
+
+    try:
+        proc = subprocess.Popen(
+            [
+                uxplay_bin,
+                "-n", "PiTV",
+                "-vs", video_sink,
+                "-avdec",
+                "-vsync", "no",
+            ],
+            stdout=logf,
+            stderr=subprocess.STDOUT,
         )
 
-    # Try the portrait sink first; if it dies quickly (bad render-rectangle on
-    # this GStreamer build), fall back to the known-good fullscreen sink so the
-    # mirror still works rather than leaving a black screen.
-    stopped_by_user = False
-    crashed         = False
-    proc            = None
-    for idx, sink in enumerate([portrait_sink, fullscreen_sink]):
-        started = time.time()
-        proc    = _launch(sink)
         while True:
             while input_queue:
                 c = input_queue.pop(0)
@@ -1572,37 +1564,39 @@ def run_mirror(stdscr):
                 break
             time.sleep(0.1)
 
-        if stopped_by_user:
-            break
-        # uxplay exited on its own.
-        quick = (time.time() - started) < 6
-        if idx == 0 and quick:
-            log("Mirror: portrait sink failed fast — retrying fullscreen")
-            continue
-        crashed = (proc.returncode not in (0, -15))   # -15 = our SIGTERM
-        break
+        if not stopped_by_user:
+            crashed = proc.returncode not in (0, -15)
+    except Exception as e:
+        log(f"ERROR launching uxplay: {e}")
+        crashed = True
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
-    if proc is not None and proc.poll() is None:
-        proc.terminate()
-        try: proc.wait(timeout=2)
-        except subprocess.TimeoutExpired: proc.kill()
-
-    if logf not in (None, subprocess.DEVNULL):
-        try: logf.close()
-        except Exception: pass
+        if logf not in (None, subprocess.DEVNULL):
+            try:
+                logf.close()
+            except Exception:
+                pass
 
     if crashed:
         log("uxplay exited unexpectedly — see /tmp/uxplay.log")
         try:
             with open(UXPLAY_LOG) as f:
-                tail = [ln.rstrip() for ln in f if ln.strip()][-8:]
+                tail = [ln.rstrip() for ln in f if ln.strip()][-12:]
         except Exception:
             tail = []
+
         print("\nScreen mirroring stopped unexpectedly. Last output:", flush=True)
         for ln in tail:
             print("  " + ln, flush=True)
-        print("\nIf video never appeared: try '-vs fbdevsink', or set "
-              "gpu_mem=128 in /boot/firmware/config.txt.\n"
+        print("\nCheck the video stack with:\n"
+              "  gst-inspect-1.0 kmssink\n"
+              "  uxplay -d -vs kmssink -avdec\n"
               "Full log: cat /tmp/uxplay.log\n", flush=True)
         time.sleep(6)
 
