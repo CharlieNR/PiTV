@@ -1945,7 +1945,6 @@ def run_noughts(stdscr, vs_computer=False):
 
 
 def run_mirror(stdscr):
-    global controller_mode
     """
     AirPlay music receiver and status screen.
 
@@ -1960,6 +1959,7 @@ def run_mirror(stdscr):
     The curses screen remains active because there is no video sink competing
     for the framebuffer.
     """
+    global controller_mode
     UXPLAY_LOG = "/tmp/uxplay.log"
     MUSIC_DACP = "/tmp/pitv-uxplay-dacp"
     MUSIC_META = "/tmp/pitv-uxplay-metadata"
