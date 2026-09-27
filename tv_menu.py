@@ -1947,19 +1947,23 @@ def run_mirror(stdscr):
     """
     AirPlay screen mirroring via UxPlay.
 
-    Use UxPlay's native Raspberry Pi path:
-      -v4l2       -> Broadcom H.264 hardware decoder
-      -vc v4l2convert -> GPU video conversion
-      -vs kmssink  -> direct framebuffer/KMS output
+    Use the Raspberry Pi Zero 2 W path documented by UxPlay:
+      -v4l2              = Broadcom/V4L2 hardware H.264 decoder
+      -vc v4l2convert    = hardware video conversion
+      -vs kmssink        = direct KMS/framebuffer output
 
-    UxPlay itself has been tested on the Pi Zero 2 W. Do not force fullscreen
-    or a static KMS render rectangle: those options are what caused the phone
-    image to be stretched. Instead, the converter preserves the incoming
-    display aspect ratio and pads it into the requested 16:9 presentation
-    frame. The client can dynamically change the width when the phone rotates.
+    The client is requested to stream at 1280x720, but AirPlay dynamically
+    changes the width when the device rotates. The converter then fits the
+    received frame into a 16:9 presentation canvas with black borders instead
+    of stretching it.
 
-    -reset 2 makes UxPlay abandon a dead mirror connection quickly if the TCP
-    video stream stops arriving, rather than leaving PiTV apparently frozen.
+    Do not use UxPlay -fs here. Fullscreen is already unnecessary with KMS and
+    was causing the image to be presented as a full-TV frame rather than as
+    the phone's fitted display.
+
+    UxPlay's -reset option handles genuine network freezes: if its TCP video
+    stream stops arriving, it will reset the dead client connection instead of
+    leaving the last frame permanently stuck on screen.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
     MIRROR_W = 1280
@@ -1974,8 +1978,8 @@ def run_mirror(stdscr):
     if not uxplay_bin:
         print("\nuxplay is not installed. Install it with:\n"
               "  sudo apt install uxplay gstreamer1.0-plugins-bad \\\n"
-              "      gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly\n"
-              "If it starts but the phone can't find it, enable mDNS:\n"
+              "      gstreamer1.0-plugins-good gstreamer1.0-libav\n"
+              "If the phone cannot find PiTV, enable mDNS:\n"
               "  sudo systemctl enable --now avahi-daemon\n", flush=True)
         time.sleep(6)
         curses.reset_prog_mode(); curses.curs_set(0)
@@ -1984,9 +1988,9 @@ def run_mirror(stdscr):
     print("AirPlay receiver 'PiTV' is ready.\n"
           "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
           "  Hardware H.264 decode + KMS framebuffer output.\n"
-          "  720p mirror, aspect ratio preserved with black borders.\n"
+          "  720p, original aspect ratio, black borders when needed.\n"
           "  Rotate the device and the TV layout follows automatically.\n"
-          "  Dead mirror connections reset automatically.\n"
+          "  Frozen network sessions reset automatically.\n"
           "  Press BACK / B / HOME to stop.\n", flush=True)
 
     try:
@@ -1994,23 +1998,24 @@ def run_mirror(stdscr):
     except Exception:
         logf = subprocess.DEVNULL
 
-    # UxPlay's documented Raspberry Pi hardware path:
-    #   -v4l2 = v4l2h264dec + v4l2convert
-    #
-    # Add a second, CPU-light videoconvertscale stage for presentation. The
-    # first v4l2convert stays in the GPU path; the final scaler adds borders
-    # when a portrait stream is negotiated against the 16:9 canvas.
+    # First use the Pi's GPU for decode and conversion. The extra
+    # videoconvertscale stage adds black borders to a fixed 16:9 presentation
+    # canvas without changing the source display aspect ratio.
     video_converter = (
         "v4l2convert ! "
         "videoconvertscale add-borders=true ! "
         f"video/x-raw,width={MIRROR_W},height={MIRROR_H},pixel-aspect-ratio=1/1"
     )
+
+    # No -fs: KMS remains on the existing TV mode. The padded presentation
+    # frame itself is what fills that mode, so portrait content gets black
+    # side bars instead of being stretched to the full TV aspect ratio.
     video_sink = "kmssink force-modesetting=true skip-vsync=true"
 
     log(
-        f"Mirror: {MIRROR_W}x{MIRROR_H}; "
-        "UxPlay V4L2 hardware H.264 decoder + v4l2convert; "
-        "aspect-preserving presentation; automatic dead-connection reset"
+        f"Mirror: {MIRROR_W}x{MIRROR_H} presentation; "
+        "V4L2 H.264 hardware decode; v4l2convert; "
+        "aspect-preserving black borders; KMS"
     )
 
     proc = None
@@ -2023,6 +2028,7 @@ def run_mirror(stdscr):
                 uxplay_bin,
                 "-n", "PiTV",
                 "-s", f"{MIRROR_W}x{MIRROR_H}",
+                "-fps", "30",
                 "-v4l2",
                 "-bt709",
                 "-srgb", "no",
@@ -2031,7 +2037,6 @@ def run_mirror(stdscr):
                 "-vsync", "no",
                 "-reset", "2",
                 "-nofreeze",
-                "-fps", "30",
             ],
             stdout=logf,
             stderr=subprocess.STDOUT,
