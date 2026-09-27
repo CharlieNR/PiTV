@@ -1980,16 +1980,19 @@ def run_mirror(stdscr):
         except OSError:
             return ""
 
-        # UxPlay debug output includes the client request plist. Prefer its
-        # actual AirPlay `name` field over generic log lines such as the server
-        # name or User-Agent.
+        # UxPlay's debug log contains several `name` fields. The later
+        # ones belong to AirPlay's internal timestampInfo streams (e.g.
+        # `EmEnc`, `SubSu`, etc.), not the device. The first client
+        # `name` in the /info request is the actual AirPlay device name.
         matches = re.findall(
             r"<key>name</key>\s*<string>(.*?)</string>",
             data,
             flags=re.DOTALL,
         )
-        if matches:
-            return html.unescape(matches[-1]).strip()
+        for match in matches:
+            name = html.unescape(match).strip()
+            if name and name not in {"EmEnc", "SubSu", "BePxT", "AfPxT", "BefEn"}:
+                return name
 
         return ""
 
