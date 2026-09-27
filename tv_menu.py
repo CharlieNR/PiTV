@@ -2031,7 +2031,6 @@ def run_mirror(stdscr):
                 "-fps", "30",
                 "-v4l2",
                 "-bt709",
-                "-srgb", "no",
                 "-vc", video_converter,
                 "-vs", video_sink,
                 "-vsync", "no",
