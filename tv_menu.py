@@ -1995,7 +1995,7 @@ def run_mirror(stdscr):
     # frame rather than stretched. kmssink then displays that already-padded
     # frame at 1:1 without performing an aspect-distorting scale of its own.
     video_sink = (
-        "kmssink force-modesetting=true "
+        "kmssink force-modesetting=true " \\n        "skip-vsync=true"
         "can-scale=false"
     )
     video_converter = "videoconvertscale add-borders=true"
