@@ -1967,8 +1967,7 @@ def run_mirror(stdscr):
     uxplay_bin = resolve_binary("uxplay")
     if not uxplay_bin:
         print("\nuxplay is not installed. Install it with:\n"
-              "  sudo apt install uxplay gstreamer1.0-plugins-bad \\
-"
+              "  sudo apt install uxplay gstreamer1.0-plugins-bad "
               "      gstreamer1.0-plugins-good gstreamer1.0-libav\n"
               "If the phone cannot find PiTV, enable mDNS:\n"
               "  sudo systemctl enable --now avahi-daemon\n", flush=True)
