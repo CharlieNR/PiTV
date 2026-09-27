@@ -1947,32 +1947,23 @@ def run_mirror(stdscr):
     """
     AirPlay screen mirroring via UxPlay.
 
-    Let UxPlay/GStreamer select the best H.264 decoder automatically. On a Pi
-    Zero 2 W with bcm2835-codec and v4l2h264dec installed, current UxPlay
-    documentation says this selects the Broadcom hardware decoder. We avoid a
-    Python-side decoder test because the systemd service environment can differ
-    from an interactive shell even when the decoder is installed.
+    Use UxPlay's native Raspberry Pi path:
+      -v4l2       -> Broadcom H.264 hardware decoder
+      -vc v4l2convert -> GPU video conversion
+      -vs kmssink  -> direct framebuffer/KMS output
 
-    The decoded video is sent through videoconvertscale with add-borders=true.
-    The KMS sink is given the actual TV canvas dimensions, so the converter can
-    fit portrait video inside the 16:9 TV frame with black side bars instead of
-    stretching it. UxPlay's -s option controls the client's requested height;
-    its width remains dynamically adjusted to the current portrait/landscape
-    shape, so rotating the device changes the incoming dimensions naturally.
+    UxPlay itself has been tested on the Pi Zero 2 W. Do not force fullscreen
+    or a static KMS render rectangle: those options are what caused the phone
+    image to be stretched. Instead, the converter preserves the incoming
+    display aspect ratio and pads it into the requested 16:9 presentation
+    frame. The client can dynamically change the width when the phone rotates.
+
+    -reset 2 makes UxPlay abandon a dead mirror connection quickly if the TCP
+    video stream stops arriving, rather than leaving PiTV apparently frozen.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
-
-    def _screen_size():
-        try:
-            with open("/sys/class/graphics/fb0/virtual_size") as f:
-                w, h = (int(v) for v in f.read().strip().split(","))
-                if w > 0 and h > 0:
-                    return w, h
-        except Exception:
-            pass
-        return 1920, 1080
-
-    tv_w, tv_h = _screen_size()
+    MIRROR_W = 1280
+    MIRROR_H = 720
 
     curses.def_prog_mode()
     curses.endwin()
@@ -1992,9 +1983,10 @@ def run_mirror(stdscr):
 
     print("AirPlay receiver 'PiTV' is ready.\n"
           "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
-          "  Hardware decoder selected automatically by GStreamer when available.\n"
-          "  The image is fitted inside the TV with black borders as needed.\n"
+          "  Hardware H.264 decode + KMS framebuffer output.\n"
+          "  720p mirror, aspect ratio preserved with black borders.\n"
           "  Rotate the device and the TV layout follows automatically.\n"
+          "  Dead mirror connections reset automatically.\n"
           "  Press BACK / B / HOME to stop.\n", flush=True)
 
     try:
@@ -2002,23 +1994,23 @@ def run_mirror(stdscr):
     except Exception:
         logf = subprocess.DEVNULL
 
-    # UxPlay's video pipeline is:
-    #   decoder -> converter -> videoscale -> videosink
+    # UxPlay's documented Raspberry Pi hardware path:
+    #   -v4l2 = v4l2h264dec + v4l2convert
     #
-    # Keeping add-borders on videoconvertscale lets the final TV-sized caps
-    # determine the padding needed to preserve the source display aspect ratio.
-    # The following KMS render rectangle is the whole physical TV canvas; the
-    # source itself is not forced to that shape.
-    video_converter = "videoconvertscale add-borders=true"
-    video_sink = (
-        f"kmssink force-modesetting=true "
-        f"render-rectangle=<0,0,{tv_w},{tv_h}>"
+    # Add a second, CPU-light videoconvertscale stage for presentation. The
+    # first v4l2convert stays in the GPU path; the final scaler adds borders
+    # when a portrait stream is negotiated against the 16:9 canvas.
+    video_converter = (
+        "v4l2convert ! "
+        "videoconvertscale add-borders=true ! "
+        f"video/x-raw,width={MIRROR_W},height={MIRROR_H},pixel-aspect-ratio=1/1"
     )
+    video_sink = "kmssink force-modesetting=true skip-vsync=true"
 
     log(
-        f"Mirror: TV canvas {tv_w}x{tv_h}; "
-        "UxPlay/GStreamer automatic H.264 decoder selection; "
-        "aspect-preserving border scaler"
+        f"Mirror: {MIRROR_W}x{MIRROR_H}; "
+        "UxPlay V4L2 hardware H.264 decoder + v4l2convert; "
+        "aspect-preserving presentation; automatic dead-connection reset"
     )
 
     proc = None
@@ -2030,12 +2022,16 @@ def run_mirror(stdscr):
             [
                 uxplay_bin,
                 "-n", "PiTV",
-                "-s", "1280x720",
+                "-s", f"{MIRROR_W}x{MIRROR_H}",
+                "-v4l2",
                 "-bt709",
+                "-srgb", "no",
                 "-vc", video_converter,
                 "-vs", video_sink,
                 "-vsync", "no",
-                "-fs",
+                "-reset", "2",
+                "-nofreeze",
+                "-fps", "30",
             ],
             stdout=logf,
             stderr=subprocess.STDOUT,
@@ -2075,14 +2071,14 @@ def run_mirror(stdscr):
         log("uxplay exited unexpectedly — see /tmp/uxplay.log")
         try:
             with open(UXPLAY_LOG) as f:
-                tail = [ln.rstrip() for ln in f if ln.strip()][-12:]
+                tail = [ln.rstrip() for ln in f if ln.strip()][-16:]
         except Exception:
             tail = []
 
         print("\nScreen mirroring stopped unexpectedly. Last output:", flush=True)
         for ln in tail:
             print("  " + ln, flush=True)
-        print("\nCheck the video stack with:\n"
+        print("\nCheck:\n"
               "  gst-inspect-1.0 v4l2h264dec\n"
               "  gst-inspect-1.0 v4l2convert\n"
               "  gst-inspect-1.0 kmssink\n"
