@@ -37,6 +37,9 @@ if command -v modprobe >/dev/null 2>&1; then
         echo "Warning: bcm2835-codec module is unavailable."
         echo "Mirroring will fall back to software decoding."
     fi
+
+    # Keep the codec module loaded after reboot as well.
+    echo "bcm2835-codec" | sudo tee /etc/modules-load.d/pitv-bcm2835-codec.conf >/dev/null
 fi
 
 if command -v gst-inspect-1.0 >/dev/null 2>&1; then
