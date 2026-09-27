@@ -25,7 +25,7 @@ except ImportError:
     EVDEV_OK = False
 
 # ChronosVer: vYYYY.MAJOR.MINOR.BUG
-VERSION = "v2026.3.2.0"
+VERSION = "v2026.2.3.8"
 
 # ─────────────────────────────────────────────────────────────────────
 # LOG SYSTEM
@@ -1945,25 +1945,15 @@ def run_noughts(stdscr, vs_computer=False):
 
 def run_mirror(stdscr):
     """
-    AirPlay screen mirroring via UxPlay.
+    AirPlay screen mirroring via UxPlay using the Linux framebuffer sink.
 
-    Use the Raspberry Pi Zero 2 W path documented by UxPlay:
-      -v4l2              = Broadcom/V4L2 hardware H.264 decoder
-      -vc v4l2convert    = hardware video conversion
-      -vs kmssink        = direct KMS/framebuffer output
+    This deliberately does NOT use kmssink. The previous KMS path could
+    connect successfully but present a black frame on this Pi/TV combination.
 
-    The client is requested to stream at 1280x720, but AirPlay dynamically
-    changes the width when the device rotates. The converter then fits the
-    received frame into a 16:9 presentation canvas with black borders instead
-    of stretching it.
-
-    Do not use UxPlay -fs here. Fullscreen is already unnecessary with KMS and
-    was causing the image to be presented as a full-TV frame rather than as
-    the phone's fitted display.
-
-    UxPlay's -reset option handles genuine network freezes: if its TCP video
-    stream stops arriving, it will reset the dead client connection instead of
-    leaving the last frame permanently stuck on screen.
+    The Pi Zero 2 W still uses the Broadcom/V4L2 H.264 decoder, but the final
+    conversion is kept software-side for compatibility before writing directly
+    to /dev/fb0. The frame is fitted into a 16:9 canvas with black borders, so
+    portrait phones remain portrait instead of being stretched.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
     MIRROR_W = 1280
@@ -1977,7 +1967,8 @@ def run_mirror(stdscr):
     uxplay_bin = resolve_binary("uxplay")
     if not uxplay_bin:
         print("\nuxplay is not installed. Install it with:\n"
-              "  sudo apt install uxplay gstreamer1.0-plugins-bad \\\n"
+              "  sudo apt install uxplay gstreamer1.0-plugins-bad \\
+"
               "      gstreamer1.0-plugins-good gstreamer1.0-libav\n"
               "If the phone cannot find PiTV, enable mDNS:\n"
               "  sudo systemctl enable --now avahi-daemon\n", flush=True)
@@ -1985,12 +1976,33 @@ def run_mirror(stdscr):
         curses.reset_prog_mode(); curses.curs_set(0)
         return
 
+    # fbdevsink is the fallback video module for this experiment. It writes
+    # straight to Linux's framebuffer and avoids the KMS/DRM display path.
+    try:
+        fbdev_ok = subprocess.run(
+            ["gst-inspect-1.0", "fbdevsink"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode == 0
+    except Exception:
+        fbdev_ok = False
+
+    if not fbdev_ok:
+        print("\nPiTV needs GStreamer fbdevsink, but it is not installed.\n"
+              "Run:\n"
+              "  sudo apt update\n"
+              "  sudo apt install -y gstreamer1.0-plugins-bad\n"
+              "Then run the firmware update again.\n", flush=True)
+        time.sleep(6)
+        curses.reset_prog_mode(); curses.curs_set(0)
+        return
+
     print("AirPlay receiver 'PiTV' is ready.\n"
           "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
-          "  Hardware H.264 decode + KMS framebuffer output.\n"
-          "  720p, original aspect ratio, black borders when needed.\n"
+          "  Broadcom/V4L2 H.264 decode + direct framebuffer output.\n"
+          "  720p presentation with original aspect ratio and black borders.\n"
           "  Rotate the device and the TV layout follows automatically.\n"
-          "  Frozen network sessions reset automatically.\n"
           "  Press BACK / B / HOME to stop.\n", flush=True)
 
     try:
@@ -1998,24 +2010,21 @@ def run_mirror(stdscr):
     except Exception:
         logf = subprocess.DEVNULL
 
-    # First use the Pi's GPU for decode and conversion. The extra
-    # videoconvertscale stage adds black borders to a fixed 16:9 presentation
-    # canvas without changing the source display aspect ratio.
+    # Keep GPU H.264 decode, but use the plain software converter instead of
+    # v4l2convert. This is intentionally conservative: the Zero's GPU does the
+    # expensive H.264 decode, while videoconvertscale handles colour conversion,
+    # scaling and letterboxing before the framebuffer sink.
     video_converter = (
-        "v4l2convert ! "
         "videoconvertscale add-borders=true ! "
-        f"video/x-raw,width={MIRROR_W},height={MIRROR_H},pixel-aspect-ratio=1/1"
+        f"video/x-raw,width={MIRROR_W},height={MIRROR_H},"
+        "pixel-aspect-ratio=1/1,format=RGB"
     )
-
-    # No -fs: KMS remains on the existing TV mode. The padded presentation
-    # frame itself is what fills that mode, so portrait content gets black
-    # side bars instead of being stretched to the full TV aspect ratio.
-    video_sink = "kmssink force-modesetting=true skip-vsync=true"
+    video_sink = "fbdevsink device=/dev/fb0 sync=false"
 
     log(
         f"Mirror: {MIRROR_W}x{MIRROR_H} presentation; "
-        "V4L2 H.264 hardware decode; v4l2convert; "
-        "aspect-preserving black borders; KMS"
+        "V4L2 H.264 hardware decode; software conversion; "
+        "aspect-preserving black borders; fbdevsink"
     )
 
     proc = None
@@ -2084,8 +2093,7 @@ def run_mirror(stdscr):
             print("  " + ln, flush=True)
         print("\nCheck:\n"
               "  gst-inspect-1.0 v4l2h264dec\n"
-              "  gst-inspect-1.0 v4l2convert\n"
-              "  gst-inspect-1.0 kmssink\n"
+              "  gst-inspect-1.0 fbdevsink\n"
               "Full log: cat /tmp/uxplay.log\n", flush=True)
         time.sleep(6)
 
