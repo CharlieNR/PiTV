@@ -1947,19 +1947,21 @@ def run_mirror(stdscr):
     """
     AirPlay screen mirroring via UxPlay.
 
-    The Pi Zero 2 W is CPU-constrained, so prefer the Broadcom H.264 decoder
-    exposed through GStreamer's Video4Linux2 plugin. If that decoder is not
-    installed/available, fall back to libav software decoding rather than
-    refusing to mirror.
+    Pi Zero 2 W performance:
+      * Prefer the Broadcom/V4L2 H.264 decoder instead of CPU libav decoding.
+      * Request a 1280x720 stream to keep network, decode and rendering load low.
+      * Pad the decoded video to a 1280x720 16:9 canvas with black borders before
+        it reaches KMS. This preserves the source aspect ratio without relying
+        on kmssink to perform aspect-ratio-aware scaling.
 
-    Video is requested at 720p to reduce Wi-Fi traffic and decoding/rendering
-    load. kmssink is deliberately told not to scale the decoded frame itself;
-    instead videoconvertscale receives the TV's fixed output dimensions and
-    adds black borders as required to preserve the source display aspect ratio.
-    This means portrait stays portrait, landscape stays landscape, and a
-    client rotation is reflected by the changed incoming video dimensions.
+    Because the padding is part of the live GStreamer pipeline, a portrait
+    source is fitted into the 16:9 canvas with black side bars, and a landscape
+    source fills the canvas. When the device rotates and its incoming dimensions
+    change, videoconvertscale recalculates the padding automatically.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
+    MIRROR_W = 1280
+    MIRROR_H = 720
 
     curses.def_prog_mode()
     curses.endwin()
@@ -1979,30 +1981,35 @@ def run_mirror(stdscr):
 
     print("AirPlay receiver 'PiTV' is ready.\n"
           "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
-          "  (phone and Pi must share the same Wi-Fi network)\n"
           "  720p low-latency mode with hardware H.264 decoding when available.\n"
-          "The image keeps its original aspect ratio with black borders as needed.\n"
-          "Rotate the device and the TV layout follows automatically.\n"
-          "Press BACK / B / HOME to stop.\n", flush=True)
+          "  Original aspect ratio is preserved with black borders as needed.\n"
+          "  Rotate the device and the TV layout follows automatically.\n"
+          "  Press BACK / B / HOME to stop.\n", flush=True)
 
     try:
         logf = open(UXPLAY_LOG, "w")
     except Exception:
         logf = subprocess.DEVNULL
 
-    # Force the receiver to negotiate a TV-sized output frame. Because
-    # videoconvertscale has add-borders=true, the input is fitted into this
-    # frame rather than stretched. kmssink then displays that already-padded
-    # frame at 1:1 without performing an aspect-distorting scale of its own.
-    video_sink = (
-        "kmssink force-modesetting=true " \\n        "skip-vsync=true"
-        "can-scale=false"
+    # UxPlay appends the converter directly into the GStreamer video pipeline:
+    #
+    #   decoder -> converter -> videoscale -> videosink
+    #
+    # videoconvertscale with add-borders=true plus a fixed capsfilter therefore
+    # gives us a real 16:9 presentation canvas while preserving the source DAR.
+    # KMS receives a correctly padded 1280x720 frame and can safely fill the TV.
+    #
+    # Do not use kmssink's render-rectangle here: that rectangle is static and
+    # cannot follow a phone rotation by itself.
+    video_converter = (
+        f"videoconvertscale add-borders=true ! "
+        f"video/x-raw,width={MIRROR_W},height={MIRROR_H}"
     )
-    video_converter = "videoconvertscale add-borders=true"
+    video_sink = "kmssink force-modesetting=true skip-vsync=true"
 
-    # Pi Zero 2 W / Pi 3 / Pi 4 have a Broadcom H.264 hardware decoder exposed
-    # through v4l2h264dec when bcm2835-codec and the GStreamer V4L2 plugin are
-    # available. Check first so a different Raspberry Pi image still works.
+    # Pi Zero 2 W should use the Broadcom V4L2 decoder when the Raspberry Pi
+    # kernel's bcm2835-codec module and GStreamer V4L2 decoder are available.
+    # Otherwise use the known-compatible software decoder.
     hardware_h264 = False
     gst_inspect = shutil.which("gst-inspect-1.0")
     if gst_inspect:
@@ -2019,13 +2026,16 @@ def run_mirror(stdscr):
             hardware_h264 = False
 
     if hardware_h264:
-        decoder_args = ["-v4l2", "-bt709"]
-        log("Mirror: using Broadcom/V4L2 H.264 hardware decoding")
+        decoder_args = ["-v4l2"]
+        log("Mirror: Broadcom/V4L2 H.264 hardware decoding enabled")
     else:
         decoder_args = ["-avdec"]
-        log("Mirror: V4L2 H.264 decoder unavailable — using software decoding")
+        log("Mirror: V4L2 H.264 unavailable; using software decoding")
 
-    log("Mirror: 720p request + aspect-preserving border scaler + KMS")
+    log(
+        f"Mirror: requested {MIRROR_W}x{MIRROR_H}; "
+        "aspect-preserving border canvas; KMS vsync disabled"
+    )
 
     proc = None
     stopped_by_user = False
@@ -2036,10 +2046,10 @@ def run_mirror(stdscr):
             [
                 uxplay_bin,
                 "-n", "PiTV",
-                "-s", "1280x720",
+                "-s", f"{MIRROR_W}x{MIRROR_H}",
+                *decoder_args,
                 "-vc", video_converter,
                 "-vs", video_sink,
-                *decoder_args,
                 "-vsync", "no",
             ],
             stdout=logf,
