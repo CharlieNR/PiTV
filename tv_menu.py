@@ -1966,15 +1966,13 @@ def run_mirror(stdscr):
     uxplay_bin = resolve_binary("uxplay")
     if not uxplay_bin:
         print("\nuxplay is not installed. Install it with:\n"
-              "  sudo apt install uxplay gstreamer1.0-plugins-good \\
-"
+              "  sudo apt install uxplay gstreamer1.0-plugins-good "
               "      gstreamer1.0-plugins-bad gstreamer1.0-libav\n"
               "If the phone cannot find PiTV, enable mDNS:\n"
               "  sudo systemctl enable --now avahi-daemon\n", flush=True)
         time.sleep(6)
         curses.reset_prog_mode(); curses.curs_set(0)
         return
-
     print("AirPlay receiver 'PiTV' is ready.\n"
           "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
           "  Raspberry Pi KMS framebuffer output.\n"
