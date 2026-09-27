@@ -25,7 +25,7 @@ except ImportError:
     EVDEV_OK = False
 
 # ChronosVer: vYYYY.MAJOR.MINOR.BUG
-VERSION = "v2026.2.3.8"
+VERSION = "v2026.2.3.9"
 
 # ─────────────────────────────────────────────────────────────────────
 # LOG SYSTEM
@@ -1945,19 +1945,18 @@ def run_noughts(stdscr, vs_computer=False):
 
 def run_mirror(stdscr):
     """
-    AirPlay screen mirroring via UxPlay using the Linux framebuffer sink.
+    AirPlay screen mirroring via UxPlay.
 
-    This deliberately does NOT use kmssink. The previous KMS path could
-    connect successfully but present a black frame on this Pi/TV combination.
+    Raspberry Pi configuration follows UxPlay's documented Lite/headless
+    setup: use kmssink for the framebuffer display and let GStreamer choose
+    the best H.264 decoder automatically. On this Pi Zero 2 W that should use
+    the Broadcom/V4L2 decoder when available.
 
-    The Pi Zero 2 W still uses the Broadcom/V4L2 H.264 decoder, but the final
-    conversion is kept software-side for compatibility before writing directly
-    to /dev/fb0. The frame is fitted into a 16:9 canvas with black borders, so
-    portrait phones remain portrait instead of being stretched.
+    We deliberately avoid the old forced -v4l2/-vc pipeline and fbdevsink.
+    Those were the non-standard changes used during the previous debugging
+    attempts and were associated with unstable connection behaviour.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
-    MIRROR_W = 1280
-    MIRROR_H = 720
 
     curses.def_prog_mode()
     curses.endwin()
@@ -1967,40 +1966,19 @@ def run_mirror(stdscr):
     uxplay_bin = resolve_binary("uxplay")
     if not uxplay_bin:
         print("\nuxplay is not installed. Install it with:\n"
-              "  sudo apt install uxplay gstreamer1.0-plugins-bad "
-              "      gstreamer1.0-plugins-good gstreamer1.0-libav\n"
+              "  sudo apt install uxplay gstreamer1.0-plugins-good \\
+"
+              "      gstreamer1.0-plugins-bad gstreamer1.0-libav\n"
               "If the phone cannot find PiTV, enable mDNS:\n"
               "  sudo systemctl enable --now avahi-daemon\n", flush=True)
         time.sleep(6)
         curses.reset_prog_mode(); curses.curs_set(0)
         return
 
-    # fbdevsink is the fallback video module for this experiment. It writes
-    # straight to Linux's framebuffer and avoids the KMS/DRM display path.
-    try:
-        fbdev_ok = subprocess.run(
-            ["gst-inspect-1.0", "fbdevsink"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode == 0
-    except Exception:
-        fbdev_ok = False
-
-    if not fbdev_ok:
-        print("\nPiTV needs GStreamer fbdevsink, but it is not installed.\n"
-              "Run:\n"
-              "  sudo apt update\n"
-              "  sudo apt install -y gstreamer1.0-plugins-bad\n"
-              "Then run the firmware update again.\n", flush=True)
-        time.sleep(6)
-        curses.reset_prog_mode(); curses.curs_set(0)
-        return
-
     print("AirPlay receiver 'PiTV' is ready.\n"
           "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
-          "  Broadcom/V4L2 H.264 decode + direct framebuffer output.\n"
-          "  720p presentation with original aspect ratio and black borders.\n"
+          "  Raspberry Pi KMS framebuffer output.\n"
+          "  GStreamer automatic H.264 decoder selection.\n"
           "  Rotate the device and the TV layout follows automatically.\n"
           "  Press BACK / B / HOME to stop.\n", flush=True)
 
@@ -2009,41 +1987,32 @@ def run_mirror(stdscr):
     except Exception:
         logf = subprocess.DEVNULL
 
-    # Keep GPU H.264 decode, but use the plain software converter instead of
-    # v4l2convert. This is intentionally conservative: the Zero's GPU does the
-    # expensive H.264 decode, while videoconvertscale handles colour conversion,
-    # scaling and letterboxing before the framebuffer sink.
-    video_converter = (
-        "videoconvertscale add-borders=true ! "
-        f"video/x-raw,width={MIRROR_W},height={MIRROR_H},"
-        "pixel-aspect-ratio=1/1,format=RGB"
-    )
-    video_sink = "fbdevsink device=/dev/fb0 sync=false"
+    # UxPlay's documented Raspberry Pi path: KMS sink, no custom converter,
+    # no forced v4l2 decoder. Keep 720p/30fps to avoid overloading the Zero 2 W.
+    video_sink = "kmssink force-modesetting=true sync=false"
 
-    log(
-        f"Mirror: {MIRROR_W}x{MIRROR_H} presentation; "
-        "V4L2 H.264 hardware decode; software conversion; "
-        "aspect-preserving black borders; fbdevsink"
-    )
+    log("Mirror: UxPlay 1.73.7+; KMS framebuffer; automatic H.264 decoder; 720p/30; debug enabled")
 
     proc = None
     stopped_by_user = False
     crashed = False
 
     try:
+        # stdbuf makes UxPlay's diagnostic output visible immediately even
+        # though stdout/stderr are redirected to /tmp/uxplay.log.
         proc = subprocess.Popen(
             [
+                "stdbuf", "-oL", "-eL",
                 uxplay_bin,
                 "-n", "PiTV",
-                "-s", f"{MIRROR_W}x{MIRROR_H}",
+                "-s", "1280x720",
                 "-fps", "30",
-                "-v4l2",
                 "-bt709",
-                "-vc", video_converter,
                 "-vs", video_sink,
                 "-vsync", "no",
-                "-reset", "2",
+                "-reset", "5",
                 "-nofreeze",
+                "-d",
             ],
             stdout=logf,
             stderr=subprocess.STDOUT,
@@ -2083,17 +2052,14 @@ def run_mirror(stdscr):
         log("uxplay exited unexpectedly — see /tmp/uxplay.log")
         try:
             with open(UXPLAY_LOG) as f:
-                tail = [ln.rstrip() for ln in f if ln.strip()][-16:]
+                tail = [ln.rstrip() for ln in f if ln.strip()][-24:]
         except Exception:
             tail = []
 
         print("\nScreen mirroring stopped unexpectedly. Last output:", flush=True)
         for ln in tail:
             print("  " + ln, flush=True)
-        print("\nCheck:\n"
-              "  gst-inspect-1.0 v4l2h264dec\n"
-              "  gst-inspect-1.0 fbdevsink\n"
-              "Full log: cat /tmp/uxplay.log\n", flush=True)
+        print("\nFull log: cat /tmp/uxplay.log\n", flush=True)
         time.sleep(6)
 
     log("Mirror: stopped")
