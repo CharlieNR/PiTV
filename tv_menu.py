@@ -1947,21 +1947,17 @@ def run_mirror(stdscr):
     """
     AirPlay screen mirroring via UxPlay.
 
-    Pi Zero 2 W performance:
-      * Prefer the Broadcom/V4L2 H.264 decoder instead of CPU libav decoding.
-      * Request a 1280x720 stream to keep network, decode and rendering load low.
-      * Pad the decoded video to a 1280x720 16:9 canvas with black borders before
-        it reaches KMS. This preserves the source aspect ratio without relying
-        on kmssink to perform aspect-ratio-aware scaling.
+    The Pi Zero 2 W should use Broadcom/V4L2 hardware H.264 decoding. The
+    deploy script installs the required GStreamer plugin and attempts to load
+    bcm2835-codec. If hardware decoding is unavailable, use a smaller 540p
+    request so CPU decoding remains usable instead of overwhelming the Pi.
 
-    Because the padding is part of the live GStreamer pipeline, a portrait
-    source is fitted into the 16:9 canvas with black side bars, and a landscape
-    source fills the canvas. When the device rotates and its incoming dimensions
-    change, videoconvertscale recalculates the padding automatically.
+    The video converter adds black borders to a fixed 16:9 presentation frame
+    while preserving the incoming display aspect ratio. The AirPlay client is
+    still told the target height only through UxPlay's -s request, so portrait
+    and landscape source dimensions can change when the device rotates.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
-    MIRROR_W = 1280
-    MIRROR_H = 720
 
     curses.def_prog_mode()
     curses.endwin()
@@ -1979,37 +1975,11 @@ def run_mirror(stdscr):
         curses.reset_prog_mode(); curses.curs_set(0)
         return
 
-    print("AirPlay receiver 'PiTV' is ready.\n"
-          "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
-          "  720p low-latency mode with hardware H.264 decoding when available.\n"
-          "  Original aspect ratio is preserved with black borders as needed.\n"
-          "  Rotate the device and the TV layout follows automatically.\n"
-          "  Press BACK / B / HOME to stop.\n", flush=True)
-
     try:
         logf = open(UXPLAY_LOG, "w")
     except Exception:
         logf = subprocess.DEVNULL
 
-    # UxPlay appends the converter directly into the GStreamer video pipeline:
-    #
-    #   decoder -> converter -> videoscale -> videosink
-    #
-    # videoconvertscale with add-borders=true plus a fixed capsfilter therefore
-    # gives us a real 16:9 presentation canvas while preserving the source DAR.
-    # KMS receives a correctly padded 1280x720 frame and can safely fill the TV.
-    #
-    # Do not use kmssink's render-rectangle here: that rectangle is static and
-    # cannot follow a phone rotation by itself.
-    video_converter = (
-        f"videoconvertscale add-borders=true ! "
-        f"video/x-raw,width={MIRROR_W},height={MIRROR_H}"
-    )
-    video_sink = "kmssink force-modesetting=true skip-vsync=true"
-
-    # Pi Zero 2 W should use the Broadcom V4L2 decoder when the Raspberry Pi
-    # kernel's bcm2835-codec module and GStreamer V4L2 decoder are available.
-    # Otherwise use the known-compatible software decoder.
     hardware_h264 = False
     gst_inspect = shutil.which("gst-inspect-1.0")
     if gst_inspect:
@@ -2026,15 +1996,35 @@ def run_mirror(stdscr):
             hardware_h264 = False
 
     if hardware_h264:
-        decoder_args = ["-v4l2"]
+        mirror_w, mirror_h = 1280, 720
+        decoder_args = ["-v4l2", "-bt709"]
         log("Mirror: Broadcom/V4L2 H.264 hardware decoding enabled")
     else:
+        mirror_w, mirror_h = 960, 540
         decoder_args = ["-avdec"]
-        log("Mirror: V4L2 H.264 unavailable; using software decoding")
+        log("Mirror: V4L2 H.264 unavailable; using 540p software decoding")
+
+    print("AirPlay receiver 'PiTV' is ready.\n"
+          "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
+          f"  {mirror_w}x{mirror_h} low-latency mode.\n"
+          "  Original aspect ratio is preserved with black borders as needed.\n"
+          "  Rotate the device and the TV layout follows automatically.\n"
+          "  Press BACK / B / HOME to stop.\n", flush=True)
+
+    # UxPlay appends the converter and then videoscale before the videosink.
+    # Keep the converter pipeline simple and valid for both software and
+    # hardware-decoded raw video. add-borders=true preserves the source DAR
+    # when the downstream caps specify the 16:9 presentation frame.
+    video_converter = (
+        "videoconvertscale add-borders=true ! "
+        f"video/x-raw,width={mirror_w},height={mirror_h},"
+        "pixel-aspect-ratio=1/1"
+    )
+    video_sink = "kmssink force-modesetting=true skip-vsync=true"
 
     log(
-        f"Mirror: requested {MIRROR_W}x{MIRROR_H}; "
-        "aspect-preserving border canvas; KMS vsync disabled"
+        f"Mirror: {mirror_w}x{mirror_h} presentation canvas; "
+        "aspect-preserving black borders; KMS vsync disabled"
     )
 
     proc = None
@@ -2046,7 +2036,7 @@ def run_mirror(stdscr):
             [
                 uxplay_bin,
                 "-n", "PiTV",
-                "-s", f"{MIRROR_W}x{MIRROR_H}",
+                "-s", f"{mirror_w}x{mirror_h}",
                 *decoder_args,
                 "-vc", video_converter,
                 "-vs", video_sink,
@@ -2099,7 +2089,7 @@ def run_mirror(stdscr):
             print("  " + ln, flush=True)
         print("\nCheck the video stack with:\n"
               "  gst-inspect-1.0 v4l2h264dec\n"
-              "  gst-inspect-1.0 videoconvertscale\n"
+              "  gst-inspect-1.0 v4l2convert\n"
               "  gst-inspect-1.0 kmssink\n"
               "Full log: cat /tmp/uxplay.log\n", flush=True)
         time.sleep(6)
