@@ -19,7 +19,7 @@ fi
 if [ "$INSTALLED_UXPLAY" != "$UXPLAY_VERSION" ]; then
     echo "Installing UxPlay $UXPLAY_VERSION from upstream..."
     sudo apt-get update -qq
-    sudo apt-get install -y build-essential cmake pkg-config git libssl-dev libplist-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav >/dev/null
+    sudo apt-get install -y build-essential cmake pkg-config git libssl-dev libplist-dev libavahi-compat-libdnssd-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav >/dev/null
     rm -rf /tmp/uxplay-build
     git clone --depth 1 --branch "v$UXPLAY_VERSION" https://github.com/FDH2/UxPlay.git /tmp/uxplay-build
     cd /tmp/uxplay-build
