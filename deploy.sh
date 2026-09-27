@@ -19,12 +19,12 @@ fi
 
 # Pi Zero 2 W screen mirroring is dramatically faster with the Broadcom
 # H.264 decoder. UxPlay uses GStreamer's v4l2h264dec/v4l2convert for this.
-echo "Checking PiTV AirPlay hardware-decoding support..."
+echo "Checking PiTV AirPlay framebuffer + hardware-decoding support..."
 if command -v apt-get >/dev/null 2>&1; then
-    if sudo apt-get update -qq && sudo apt-get install -y         gstreamer1.0-tools         gstreamer1.0-plugins-good         gstreamer1.0-libav >/dev/null; then
+    if sudo apt-get update -qq && sudo apt-get install -y         gstreamer1.0-tools         gstreamer1.0-plugins-good         gstreamer1.0-plugins-bad         gstreamer1.0-libav >/dev/null; then
         echo "GStreamer video plugins ready."
     else
-        echo "Warning: could not update/install GStreamer video plugins."
+        echo "Warning: could not update/install GStreamer video plugins (including fbdevsink)."
         echo "Mirroring will fall back to software decoding if necessary."
     fi
 fi
