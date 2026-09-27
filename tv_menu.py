@@ -1,4 +1,5 @@
 import curses
+import html
 import hmac
 import json
 import os
@@ -292,7 +293,7 @@ ART_OPTIONS = [
     ("FIRE",          "FIRE",   "FIRE"),
     ("CLOCK + STARS", None,     "CLOCK"),
     ("MATRIX RAIN",   None,     "MATRIX"),
-    ("SCREEN MIRROR", "MIRROR", "MIRROR"),
+    ("STREAM MUSIC",  "MIRROR", "MIRROR"),
     ("GAMES",         "GAMES",  "GAMES"),
 ]
 
@@ -1945,123 +1946,210 @@ def run_noughts(stdscr, vs_computer=False):
 
 def run_mirror(stdscr):
     """
-    AirPlay screen mirroring via UxPlay.
+    AirPlay music receiver and status screen.
 
-    Raspberry Pi configuration follows UxPlay's documented Lite/headless
-    setup: use kmssink for the framebuffer display and let GStreamer choose
-    the best H.264 decoder automatically. On this Pi Zero 2 W that should use
-    the Broadcom/V4L2 decoder when available.
+    UxPlay is deliberately run with `-vs 0`, which disables video output while
+    retaining AirPlay audio reception. This means the Pi never decodes, scales
+    or draws the phone display, so the TV only shows the PiTV music status UI.
 
-    We deliberately avoid the old forced -v4l2/-vc pipeline and fbdevsink.
-    Those were the non-standard changes used during the previous debugging
-    attempts and were associated with unstable connection behaviour.
+    UxPlay writes:
+      - `-dacp` file: transient while an AirPlay client is connected.
+      - `-md` file: current audio metadata supplied by the client.
+
+    The curses screen remains active because there is no video sink competing
+    for the framebuffer.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
+    MUSIC_DACP = "/tmp/pitv-uxplay-dacp"
+    MUSIC_META = "/tmp/pitv-uxplay-metadata"
 
-    curses.def_prog_mode()
-    curses.endwin()
-    _reset_terminal()
-    os.system("clear")
+    def _cleanup_files():
+        for path in (MUSIC_DACP, MUSIC_META):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
-    uxplay_bin = resolve_binary("uxplay")
-    if not uxplay_bin:
-        print("\nuxplay is not installed. Install it with:\n"
-              "  sudo apt install uxplay gstreamer1.0-plugins-good "
-              "      gstreamer1.0-plugins-bad gstreamer1.0-libav\n"
-              "If the phone cannot find PiTV, enable mDNS:\n"
-              "  sudo systemctl enable --now avahi-daemon\n", flush=True)
-        time.sleep(6)
-        curses.reset_prog_mode(); curses.curs_set(0)
-        return
-    print("AirPlay receiver 'PiTV' is ready.\n"
-          "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
-          "  Raspberry Pi KMS framebuffer output.\n"
-          "  GStreamer automatic H.264 decoder selection.\n"
-          "  Rotate the device and the TV layout follows automatically.\n"
-          "  Press BACK / B / HOME to stop.\n", flush=True)
+    def _device_name():
+        try:
+            with open(UXPLAY_LOG, "r", encoding="utf-8", errors="replace") as f:
+                data = f.read()
+        except OSError:
+            return ""
 
-    try:
-        logf = open(UXPLAY_LOG, "w")
-    except Exception:
-        logf = subprocess.DEVNULL
+        # UxPlay debug output includes the client request plist. Prefer its
+        # actual AirPlay `name` field over generic log lines such as the server
+        # name or User-Agent.
+        matches = re.findall(
+            r"<key>name</key>\\s*<string>(.*?)</string>",
+            data,
+            flags=re.DOTALL,
+        )
+        if matches:
+            return html.unescape(matches[-1]).strip()
 
-    # UxPlay's documented Raspberry Pi path: KMS sink, no custom converter,
-    # no forced v4l2 decoder. Keep 720p/30fps to avoid overloading the Zero 2 W.
-    video_sink = "kmssink force-modesetting=true sync=false"
+        return ""
 
-    log("Mirror: UxPlay 1.73.7+; KMS framebuffer; automatic H.264 decoder; 720p/30; debug enabled")
+    def _metadata():
+        try:
+            with open(MUSIC_META, "r", encoding="utf-8", errors="replace") as f:
+                lines = [ln.strip() for ln in f if ln.strip()]
+        except OSError:
+            return "", ""
 
+        values = {}
+        for line in lines:
+            m = re.match(r"^([^:=]+?)\\s*[:=]\\s*(.*)$", line)
+            if not m:
+                continue
+            key = m.group(1).strip().casefold()
+            value = html.unescape(m.group(2).strip())
+            if value:
+                values[key] = value
+
+        title = values.get("title", "") or values.get("track", "") or values.get("name", "")
+        artist = values.get("artist", "") or values.get("artistname", "")
+
+        # A few clients/plugins can use a slightly different label. Keep a
+        # useful fallback rather than showing an empty playing state.
+        if not title:
+            for line in lines:
+                if line.casefold().startswith("title "):
+                    title = line.split(" ", 1)[1].strip()
+                    break
+
+        return title, artist
+
+    def _draw(stdscr, connected, device, title, artist):
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+        attr = curses.color_pair(2) | curses.A_BOLD
+
+        if not connected:
+            lines = ["Connect to PiTV to stream Music"]
+        elif title:
+            lines = [title]
+            if artist:
+                lines.append(artist)
+        else:
+            lines = [f"{device or \"Device\"} is connected to the screen"]
+
+        # Wrap only when the TV console is too narrow for the requested text.
+        wrapped = []
+        width = max(8, max_x - 4)
+        for line in lines:
+            if len(line) <= width:
+                wrapped.append(line)
+            else:
+                wrapped.extend([line[i:i + width] for i in range(0, len(line), width)])
+
+        start_y = max(0, (max_y - len(wrapped)) // 2)
+        for n, line in enumerate(wrapped):
+            x = max(0, (max_x - len(line)) // 2)
+            try:
+                stdscr.addstr(start_y + n, x, line[:max_x - x], attr)
+            except curses.error:
+                pass
+
+        stdscr.refresh()
+
+    _cleanup_files()
+    controller_mode_backup = controller_mode
     proc = None
+    logf = None
     stopped_by_user = False
-    crashed = False
 
     try:
-        # stdbuf makes UxPlay's diagnostic output visible immediately even
-        # though stdout/stderr are redirected to /tmp/uxplay.log.
+        uxplay_bin = resolve_binary("uxplay")
+        if not uxplay_bin:
+            show_message(stdscr,
+                         ["UXPLAY NOT INSTALLED", "",
+                          "Run firmware update to install UxPlay."],
+                         color_pair=1, duration=5.0)
+            return
+
+        try:
+            logf = open(UXPLAY_LOG, "w", encoding="utf-8")
+        except OSError:
+            logf = subprocess.DEVNULL
+
+        log("Music receiver: starting UxPlay audio-only mode")
         proc = subprocess.Popen(
             [
                 "stdbuf", "-oL", "-eL",
                 uxplay_bin,
                 "-n", "PiTV",
-                "-s", "1280x720",
-                "-fps", "30",
-                "-bt709",
-                "-vs", video_sink,
-                "-vsync", "no",
-                "-reset", "5",
-                "-nofreeze",
-                "-d",
+                "-nh",
+                "-vs", "0",
+                "-md", MUSIC_META,
+                "-dacp", MUSIC_DACP,
+                "-d", "1",
             ],
             stdout=logf,
             stderr=subprocess.STDOUT,
         )
 
-        while True:
-            while input_queue:
-                c = input_queue.pop(0)
-                if c in ("BACK", "HOME"):
-                    stopped_by_user = True
-                    proc.terminate()
-                    break
-            if stopped_by_user or proc.poll() is not None:
-                break
-            time.sleep(0.1)
+        stdscr.nodelay(True)
+        controller_mode = "MENU"
 
-        if not stopped_by_user:
-            crashed = proc.returncode not in (0, -15)
-    except Exception as e:
-        log(f"ERROR launching uxplay: {e}")
-        crashed = True
-    finally:
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
+        while True:
+            command = None
+            while input_queue:
+                command = input_queue.pop(0)
+                if command in ("BACK", "HOME"):
+                    stopped_by_user = True
+                    break
+
+            if stopped_by_user:
+                break
+
+            if proc.poll() is not None:
+                log(f"Music receiver: UxPlay exited with code {proc.returncode}")
+                proc = None
+                _draw(stdscr, False, "", "", "")
+                time.sleep(1)
+                break
+
             try:
+                ch = stdscr.getch()
+                if ch in (27, ord("q"), ord("b"), ord("B")):
+                    stopped_by_user = True
+                    break
+            except curses.error:
+                pass
+
+            connected = os.path.exists(MUSIC_DACP)
+            device = _device_name() if connected else ""
+            title, artist = _metadata() if connected else ("", "")
+            _draw(stdscr, connected, device, title, artist)
+            time.sleep(0.20)
+
+    except Exception as e:
+        log(f"ERROR starting music receiver: {e}")
+    finally:
+        controller_mode = controller_mode_backup
+        input_queue.clear()
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 proc.kill()
-
+            except OSError:
+                pass
         if logf not in (None, subprocess.DEVNULL):
             try:
                 logf.close()
-            except Exception:
+            except OSError:
                 pass
+        _cleanup_files()
+        stdscr.nodelay(False)
+        stdscr.clear()
+        stdscr.refresh()
+        log("Music receiver: stopped")
 
-    if crashed:
-        log("uxplay exited unexpectedly — see /tmp/uxplay.log")
-        try:
-            with open(UXPLAY_LOG) as f:
-                tail = [ln.rstrip() for ln in f if ln.strip()][-24:]
-        except Exception:
-            tail = []
-
-        print("\nScreen mirroring stopped unexpectedly. Last output:", flush=True)
-        for ln in tail:
-            print("  " + ln, flush=True)
-        print("\nFull log: cat /tmp/uxplay.log\n", flush=True)
-        time.sleep(6)
-
-    log("Mirror: stopped")
-    curses.reset_prog_mode(); curses.curs_set(0)
 
 
 # ─────────────────────────────────────────────────────────────────────
