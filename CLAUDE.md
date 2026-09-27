@@ -105,10 +105,16 @@ scrolls now that the list is long — the highlighted card stays in view with
 
 ## Screen mirroring
 
-`run_mirror()` releases the console (`endwin`) and runs **uxplay** with a
-`kmssink` render-rectangle sized to show the phone centred at its own
-(portrait) shape, falling back to a fullscreen sink if that fails.
-Needs `uxplay` + gstreamer plugins + `avahi-daemon` (mDNS).
+`run_mirror()` releases the console (`endwin`) and runs **uxplay** with the
+**KMS videosink** directly against the Pi's framebuffer. The video sink is not
+given a fixed portrait rectangle: **kmssink calculates the destination size
+from the incoming video aspect ratio**, so the phone/tablet image is fitted
+inside the TV without stretching. Portrait mirroring naturally gets black side
+bars, while landscape uses the available width, and a client rotation that
+changes the incoming video dimensions causes KMS to recalculate the layout.
+Software H264 decoding (`-avdec`) is used for compatibility, with
+`-vsync no` to avoid unnecessary frame drops for pure screen mirroring.
+Needs `uxplay` + GStreamer plugins + `avahi-daemon` (mDNS).
 
 ## HomeKit TV (Homebridge)
 
