@@ -1945,6 +1945,7 @@ def run_noughts(stdscr, vs_computer=False):
 
 
 def run_mirror(stdscr):
+    global controller_mode
     """
     AirPlay music receiver and status screen.
 
@@ -1983,7 +1984,7 @@ def run_mirror(stdscr):
         # actual AirPlay `name` field over generic log lines such as the server
         # name or User-Agent.
         matches = re.findall(
-            r"<key>name</key>\\s*<string>(.*?)</string>",
+            r"<key>name</key>\s*<string>(.*?)</string>",
             data,
             flags=re.DOTALL,
         )
@@ -2001,7 +2002,7 @@ def run_mirror(stdscr):
 
         values = {}
         for line in lines:
-            m = re.match(r"^([^:=]+?)\\s*[:=]\\s*(.*)$", line)
+            m = re.match(r"^([^:=]+?)\s*[:=]\s*(.*)$", line)
             if not m:
                 continue
             key = m.group(1).strip().casefold()
@@ -2034,7 +2035,8 @@ def run_mirror(stdscr):
             if artist:
                 lines.append(artist)
         else:
-            lines = [f"{device or \"Device\"} is connected to the screen"]
+            connected_device = device or "Device"
+            lines = [f"{connected_device} is connected to the screen"]
 
         # Wrap only when the TV console is too narrow for the requested text.
         wrapped = []
