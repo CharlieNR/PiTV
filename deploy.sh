@@ -4,6 +4,41 @@ set -e
 
 echo "Deploying Pi TV updates..."
 
+# ── UxPlay version / iOS compatibility ─────────────────────────────
+# UxPlay 1.73.7 contains the upstream fix for changed iOS 27 TEARDOWN
+# behaviour. Older versions can connect briefly and then drop the mirror.
+UXPLAY_VERSION="1.73.7"
+UXPLAY_BIN="/usr/local/bin/uxplay"
+
+echo "Checking PiTV UxPlay version..."
+INSTALLED_UXPLAY=""
+if [ -x "$UXPLAY_BIN" ]; then
+    INSTALLED_UXPLAY="$("$UXPLAY_BIN" -h 2>&1 | sed -n "s/^UxPlay \\([0-9][0-9.]*\\).*/\\1/p" | head -1 || true)"
+fi
+
+if [ "$INSTALLED_UXPLAY" != "$UXPLAY_VERSION" ]; then
+    echo "Installing UxPlay $UXPLAY_VERSION from upstream..."
+    sudo apt-get update -qq
+    sudo apt-get install -y build-essential cmake pkg-config git libssl-dev libplist-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav >/dev/null
+    rm -rf /tmp/uxplay-build
+    git clone --depth 1 --branch "v$UXPLAY_VERSION" https://github.com/FDH2/UxPlay.git /tmp/uxplay-build
+    cd /tmp/uxplay-build
+    cmake -DNO_X11_DEPS=ON .
+    make -j2
+    sudo make install
+    cd - >/dev/null
+    rm -rf /tmp/uxplay-build
+    INSTALLED_UXPLAY="$("$UXPLAY_BIN" -h 2>&1 | sed -n "s/^UxPlay \\([0-9][0-9.]*\\).*/\\1/p" | head -1 || true)"
+    if [ "$INSTALLED_UXPLAY" != "$UXPLAY_VERSION" ]; then
+        echo "ERROR: UxPlay installation did not report version $UXPLAY_VERSION."
+        echo "Installed report: ${INSTALLED_UXPLAY:-unknown}"
+        exit 1
+    fi
+    echo "UxPlay $INSTALLED_UXPLAY installed."
+else
+    echo "UxPlay $INSTALLED_UXPLAY already installed."
+fi
+
 # ── AirPlay hardware decoding prerequisites ─────────────────────────
 # Give the Zero 2 W enough GPU memory for the Broadcom video decoder.
 # UxPlay's Raspberry Pi testing found 128 MB worked well on Zero 2 W.
