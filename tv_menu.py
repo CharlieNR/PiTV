@@ -1945,16 +1945,23 @@ def run_noughts(stdscr, vs_computer=False):
 
 def run_mirror(stdscr):
     """
-    AirPlay screen mirroring via uxplay.
+    AirPlay screen mirroring via UxPlay.
 
-    Release the curses framebuffer before UxPlay starts, then render through
-    kmssink. Do not force a fixed portrait rectangle: kmssink calculates the
-    output size from the incoming video dimensions/aspect ratio, so portrait
-    gets black side bars while landscape uses the available TV width. When
-    the client rotates and the incoming dimensions change, kmssink rebuilds
-    the display configuration for the new orientation.
+    Pi Zero 2 W performance:
+      * Prefer the Broadcom/V4L2 H.264 decoder instead of CPU libav decoding.
+      * Request a 1280x720 stream to keep network, decode and rendering load low.
+      * Pad the decoded video to a 1280x720 16:9 canvas with black borders before
+        it reaches KMS. This preserves the source aspect ratio without relying
+        on kmssink to perform aspect-ratio-aware scaling.
+
+    Because the padding is part of the live GStreamer pipeline, a portrait
+    source is fitted into the 16:9 canvas with black side bars, and a landscape
+    source fills the canvas. When the device rotates and its incoming dimensions
+    change, videoconvertscale recalculates the padding automatically.
     """
     UXPLAY_LOG = "/tmp/uxplay.log"
+    MIRROR_W = 1280
+    MIRROR_H = 720
 
     curses.def_prog_mode()
     curses.endwin()
@@ -1974,22 +1981,61 @@ def run_mirror(stdscr):
 
     print("AirPlay receiver 'PiTV' is ready.\n"
           "  iPhone/iPad/Mac: Control Centre -> Screen Mirroring -> PiTV\n"
-          "  (phone and Pi must share the same Wi-Fi network)\n"
-          "The image keeps its original aspect ratio and is fitted inside the TV.\n"
-          "Portrait gets black bars at the sides; landscape uses the TV width.\n"
-          "Rotate the device and the TV layout follows automatically.\n"
-          "Press BACK / B / HOME to stop.\n", flush=True)
+          "  720p low-latency mode with hardware H.264 decoding when available.\n"
+          "  Original aspect ratio is preserved with black borders as needed.\n"
+          "  Rotate the device and the TV layout follows automatically.\n"
+          "  Press BACK / B / HOME to stop.\n", flush=True)
 
     try:
         logf = open(UXPLAY_LOG, "w")
     except Exception:
         logf = subprocess.DEVNULL
 
-    # UxPlay explicitly recommends kmssink for Raspberry Pi systems using
-    # the framebuffer without X11. Leaving the render rectangle unset allows
-    # kmssink to calculate the destination from each new video caps set.
-    video_sink = "kmssink force-modesetting=true"
-    log("Mirror: KMS sink enabled; destination follows incoming aspect ratio")
+    # UxPlay appends the converter directly into the GStreamer video pipeline:
+    #
+    #   decoder -> converter -> videoscale -> videosink
+    #
+    # videoconvertscale with add-borders=true plus a fixed capsfilter therefore
+    # gives us a real 16:9 presentation canvas while preserving the source DAR.
+    # KMS receives a correctly padded 1280x720 frame and can safely fill the TV.
+    #
+    # Do not use kmssink's render-rectangle here: that rectangle is static and
+    # cannot follow a phone rotation by itself.
+    video_converter = (
+        f"videoconvertscale add-borders=true ! "
+        f"video/x-raw,width={MIRROR_W},height={MIRROR_H}"
+    )
+    video_sink = "kmssink force-modesetting=true skip-vsync=true"
+
+    # Pi Zero 2 W should use the Broadcom V4L2 decoder when the Raspberry Pi
+    # kernel's bcm2835-codec module and GStreamer V4L2 decoder are available.
+    # Otherwise use the known-compatible software decoder.
+    hardware_h264 = False
+    gst_inspect = shutil.which("gst-inspect-1.0")
+    if gst_inspect:
+        try:
+            probe = subprocess.run(
+                [gst_inspect, "v4l2h264dec"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+                check=False,
+            )
+            hardware_h264 = probe.returncode == 0
+        except Exception:
+            hardware_h264 = False
+
+    if hardware_h264:
+        decoder_args = ["-v4l2"]
+        log("Mirror: Broadcom/V4L2 H.264 hardware decoding enabled")
+    else:
+        decoder_args = ["-avdec"]
+        log("Mirror: V4L2 H.264 unavailable; using software decoding")
+
+    log(
+        f"Mirror: requested {MIRROR_W}x{MIRROR_H}; "
+        "aspect-preserving border canvas; KMS vsync disabled"
+    )
 
     proc = None
     stopped_by_user = False
@@ -2000,8 +2046,10 @@ def run_mirror(stdscr):
             [
                 uxplay_bin,
                 "-n", "PiTV",
+                "-s", f"{MIRROR_W}x{MIRROR_H}",
+                "-vc", video_converter,
                 "-vs", video_sink,
-                "-avdec",
+                *decoder_args,
                 "-vsync", "no",
             ],
             stdout=logf,
@@ -2050,8 +2098,9 @@ def run_mirror(stdscr):
         for ln in tail:
             print("  " + ln, flush=True)
         print("\nCheck the video stack with:\n"
+              "  gst-inspect-1.0 v4l2h264dec\n"
+              "  gst-inspect-1.0 videoconvertscale\n"
               "  gst-inspect-1.0 kmssink\n"
-              "  uxplay -d -vs kmssink -avdec\n"
               "Full log: cat /tmp/uxplay.log\n", flush=True)
         time.sleep(6)
 
