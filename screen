@@ -51,6 +51,7 @@ Player PINs (unlock locked games; the log records who played):
 
 System:
   screen version                        show the PiTV version
+  screen restart "<reason>"             reboot the Raspberry Pi and report the reason
   screen unlock authorise <code>        clear a full lockdown
   screen joke on|off|status             joke mode: after a random 10-50 min
                                         the TV "dies" on its own, then again
@@ -200,6 +201,28 @@ case "$CMD" in
                 exit 1
                 ;;
         esac
+        ;;
+
+    restart)
+        # Restart is intentionally privileged. If not run as root, fail silently.
+        if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+            exit 1
+        fi
+
+        shift
+        if [[ $# -eq 0 ]]; then
+            echo 'Usage: screen restart "<reason>"' >&2
+            exit 1
+        fi
+
+        REASON="$*"
+        FLAG_FILE="/home/charlie/shutdown_flag.txt"
+
+        # boot_report.py consumes this file on the next boot and reports the
+        # reason in the status email.
+        printf '%s\n' "$REASON" > "$FLAG_FILE"
+
+        exec /usr/bin/systemctl reboot
         ;;
 
     change)
