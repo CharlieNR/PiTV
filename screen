@@ -20,6 +20,7 @@ Navigation:
 TV power:
   screen on
   screen off
+  screen status              show whether the TV is on or off
 
 TV input:
   screen change       toggle between PiTV and Sky using the current CEC input
@@ -167,6 +168,31 @@ case "$CMD" in
 
     off)
         _send_raw "TV_OFF"
+        ;;
+
+    status)
+        # Ask the TV directly over HDMI-CEC. `pow 0` reports the power state
+        # of CEC device 0 (the TV), rather than relying on the last command.
+        STATUS_OUTPUT="$(/opt/pitv/cec-cmd.sh "pow 0" 2>/dev/null || true)"
+        POWER_STATUS="$(printf '%s\n' "$STATUS_OUTPUT" \
+            | sed -n 's/.*power status:[[:space:]]*//Ip' \
+            | tail -1 \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr -d '[:space:]')"
+
+        case "$POWER_STATUS" in
+            on)
+                echo "TV: ON"
+                ;;
+            off|standby)
+                echo "TV: OFF"
+                ;;
+            *)
+                echo "TV: UNKNOWN"
+                echo "CEC did not return a usable power status." >&2
+                exit 1
+                ;;
+        esac
         ;;
 
     change)
