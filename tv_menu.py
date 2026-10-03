@@ -2088,6 +2088,10 @@ def run_mirror(stdscr):
                 "-n", "PiTV",
                 "-nh",
                 "-vs", "0",
+                # Explicitly disable UxPlay Audio-only timestamp sync. A uxplayrc
+                # file can otherwise enable -async, which adds about 2 seconds of
+                # client-side latency before audio from video sources is heard.
+                "-async", "no",
                 "-md", MUSIC_META,
                 "-dacp", MUSIC_DACP,
                 "-d", "1",
