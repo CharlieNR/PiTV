@@ -2088,6 +2088,9 @@ def run_mirror(stdscr):
                 "-n", "PiTV",
                 "-nh",
                 "-vs", "0",
+                # Disable AirPlay timestamp sync in Audio-only mode. This keeps
+                # audio from video sources from being delayed by the sync buffer.
+                "-async", "no",
                 "-md", MUSIC_META,
                 "-dacp", MUSIC_DACP,
                 "-d", "1",
