@@ -1677,7 +1677,6 @@ def run_game(stdscr, cmd_list: list):
     # While the game runs the controller listener must stop injecting menu
     # commands — the mapper delivers movement as real key events instead.
     controller_mode = "GAME_EXTERNAL"
-    _set_external_game_state(True)
     _current_game   = binary
     game_log = None
     try:
@@ -1686,6 +1685,7 @@ def run_game(stdscr, cmd_list: list):
             # bails on this terminal) leaves a diagnosable trace in the log.
             game_log = open("/tmp/pitv-game.log", "w")
             proc = subprocess.Popen(cmd_list, env=env, stderr=game_log)
+            _set_external_game_state(True)
         except Exception as e:
             log(f"ERROR launching {binary}: {e}")
             _reset_terminal()
