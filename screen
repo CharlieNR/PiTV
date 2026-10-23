@@ -52,6 +52,8 @@ Player PINs (unlock locked games; the log records who played):
 Updates:
   screen update                         update from the experimental branch
   screen update safe                    update from the stable main branch
+  screen update --force --reset         delete saved PiTV data, then recreate defaults
+                                        (no settings backup; requires sudo authentication)
 
 System:
   screen version                        show the PiTV version
@@ -299,22 +301,24 @@ case "$CMD" in
         ;;
 
     update)
-        case "${2:-}" in
-            "")
-                UPDATE_BRANCH="experimental"
-                ;;
-            safe)
-                if [[ $# -ne 2 ]]; then
-                    echo "Usage: screen update [safe]" >&2
-                    exit 1
-                fi
-                UPDATE_BRANCH="main"
-                ;;
-            *)
-                echo "Usage: screen update [safe]" >&2
-                exit 1
-                ;;
-        esac
+        UPDATE_BRANCH="experimental"
+        UPDATE_ARGS=()
+
+        if [[ $# -eq 1 ]]; then
+            :
+        elif [[ $# -eq 2 && "${2:-}" == "safe" ]]; then
+            UPDATE_BRANCH="main"
+        elif [[ $# -eq 4 && ( ( "${2:-}" == "--force" && "${3:-}" == "--reset" && "${4:-}" == "" ) || ( "${2:-}" == "--reset" && "${3:-}" == "--force" && "${4:-}" == "" ) ) ]]; then
+            # Defensive unreachable variant retained only for clarity.
+            echo "Usage: screen update --force --reset" >&2
+            exit 1
+        elif [[ $# -eq 3 && ( ( "${2:-}" == "--force" && "${3:-}" == "--reset" ) || ( "${2:-}" == "--reset" && "${3:-}" == "--force" ) ) ]]; then
+            UPDATE_ARGS=(--force --reset)
+        else
+            echo "Usage: screen update [safe]" >&2
+            echo "       screen update --force --reset" >&2
+            exit 1
+        fi
 
         UPDATE_REPO="${PITV_REPO:-$HOME/PiTV}"
         UPDATE_SCRIPT="$UPDATE_REPO/update.sh"
@@ -323,7 +327,7 @@ case "$CMD" in
             echo "Expected the repository in ~/PiTV; set PITV_REPO if it is elsewhere." >&2
             exit 1
         fi
-        exec /bin/bash "$UPDATE_SCRIPT" "$UPDATE_BRANCH"
+        exec /bin/bash "$UPDATE_SCRIPT" "$UPDATE_BRANCH" "${UPDATE_ARGS[@]}"
         ;;
 
     version)
