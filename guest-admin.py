@@ -25,6 +25,7 @@ import sys
 import time
 
 import pitv_secrets
+import pitv_state
 
 PITV_DIR       = os.path.expanduser("~/.pitv")
 GUEST_FILE     = os.path.join(PITV_DIR, "guests.json")
@@ -44,20 +45,13 @@ BAD_NAME_CHARS = set('|\r\n\t')
 
 def _load(path, default):
     try:
-        with open(path) as f:
-            return json.load(f)
+        return pitv_state.load_named(path, default)
     except Exception:
         return default
 
 
 def _save(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    pitv_state.save_named(path, data)
 
 
 def load_guests():
@@ -250,13 +244,7 @@ def cmd_lock(args):
 def cmd_kick():
     """Sign every guest out (even offline ones) by rotating the guest session
     key — all existing guest cookies become invalid. Admins are unaffected."""
-    os.makedirs(PITV_DIR, exist_ok=True)
-    with open(GUEST_SECRET, "wb") as f:
-        f.write(secrets.token_bytes(32))
-    try:
-        os.chmod(GUEST_SECRET, 0o600)
-    except OSError:
-        pass
+    pitv_state.write_value("GUEST_PORTAL_SECRET", secrets.token_hex(32))
     print("All guests signed out (guest session key rotated).")
 
 
