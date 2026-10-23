@@ -83,7 +83,9 @@ def _read_text_file(path: str) -> str | None:
 def _read_bytes_file(path: str) -> bytes | None:
     try:
         with open(path, "rb") as handle:
-            value = handle.read().strip()
+            value = handle.read()
+        # These are binary 32-byte secrets, not text files. Do not strip the
+        # bytes: even a leading/trailing whitespace byte is part of the key.
         return value or None
     except OSError:
         return None
