@@ -28,7 +28,7 @@ except ImportError:
     EVDEV_OK = False
 
 # ChronosVer: vYYYY.MAJOR.MINOR.BUG
-VERSION = "v2026.2.3.14"
+VERSION = "v2026.2.3.15"
 
 # ─────────────────────────────────────────────────────────────────────
 # LOG SYSTEM
@@ -580,6 +580,16 @@ def listen_fifo():
                             log("UNLOCK rejected")
                         continue
 
+                    # PIN-keypad digits are separate from external-game text input.
+                    # They are accepted only for the current prompt and its first claimant.
+                    if raw[:7].upper() == "PINKEY ":
+                        parts = raw.split()
+                        if len(parts) == 4 and _web_pin_token_valid(parts[1], parts[2]):
+                            key = parts[3].upper()
+                            if key in {"DEL", "OK"} or (len(key) == 1 and key in "0123456789"):
+                                input_queue.append(("WEB_PIN", parts[1], parts[2], key))
+                        continue
+
                     # The web keyboard includes its unguessable lease token on
                     # every command. Only the current lease holder's input may
                     # be injected, so SSH remote typing cannot compete for input.
@@ -651,6 +661,14 @@ def listen_fifo():
 TV_STATE_FILE  = "/tmp/pitv-tv-state"
 TV_INPUT_FILE  = "/tmp/pitv-tv-input"
 GAME_STATE_FILE = "/tmp/pitv-game-state"
+PIN_ENTRY_STATE_FILE = "/tmp/pitv-pin-entry-state"
+PIN_ENTRY_LEASE_PATH = os.path.join(os.path.expanduser("~/.pitv"), "pin-entry-lease.json")
+PIN_ENTRY_GUARD_PATH = os.path.join(os.path.expanduser("~/.pitv"), "pin-entry-lease.lock")
+
+_pin_prompt_signature = None
+_pin_prompt_event_id = None
+_pin_prompt_started_at = 0.0
+_pin_state_last = None
 
 
 def _set_external_game_state(active: bool) -> None:
@@ -923,6 +941,146 @@ def _clear_web_keyboard_lease(owner_admin=None) -> None:
                 os.close(fd)
     except OSError as e:
         log(f"Could not clear phone keyboard lease: {e}")
+
+
+def _read_pin_entry_state() -> dict:
+    """Read only the public status of the on-TV PIN prompt, never the PIN."""
+    try:
+        with open(PIN_ENTRY_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {"active": False}
+    except (OSError, ValueError, TypeError):
+        return {"active": False}
+
+
+def _clear_web_pin_lease(owner_admin=None) -> None:
+    """Clear exclusive phone PIN input, optionally only for a specified role."""
+    try:
+        os.makedirs(os.path.dirname(PIN_ENTRY_LEASE_PATH), mode=0o700, exist_ok=True)
+        fd = os.open(PIN_ENTRY_GUARD_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            remove = owner_admin is None
+            if not remove:
+                try:
+                    with open(PIN_ENTRY_LEASE_PATH, "r", encoding="utf-8") as f:
+                        lease = json.load(f)
+                    remove = lease.get("owner_admin") is owner_admin
+                except (OSError, ValueError, TypeError, AttributeError):
+                    remove = False
+            if remove:
+                try:
+                    os.unlink(PIN_ENTRY_LEASE_PATH)
+                except FileNotFoundError:
+                    pass
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+    except OSError as e:
+        log(f"Could not clear phone PIN lease: {e}")
+
+
+def _web_pin_claim_active() -> bool:
+    """True only while the current TV PIN prompt has a live phone claimant."""
+    state = _read_pin_entry_state()
+    if not state.get("active") or not state.get("event_id"):
+        return False
+    try:
+        with open(PIN_ENTRY_LEASE_PATH, "r", encoding="utf-8") as f:
+            lease = json.load(f)
+        valid = (float(lease.get("expires_at", 0)) > time.time()
+                 and hmac.compare_digest(str(lease.get("event_id", "")),
+                                         str(state.get("event_id", ""))))
+        if not valid:
+            return False
+        if not bool(lease.get("owner_admin")):
+            try:
+                with open("/tmp/pitv-guest-mode", "r", encoding="ascii") as f:
+                    if f.read().strip().lower() != "on":
+                        return False
+            except OSError:
+                return False
+            try:
+                with open("/tmp/pitv-guest-lock", "r", encoding="ascii") as f:
+                    if f.read().strip().lower() == "on":
+                        return False
+            except OSError:
+                pass
+        return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _web_pin_token_valid(token: str, event_id: str) -> bool:
+    """Validate a phone's token against both the lease and current PIN prompt."""
+    if not token or not event_id or not _web_pin_claim_active():
+        return False
+    try:
+        with open(PIN_ENTRY_LEASE_PATH, "r", encoding="utf-8") as f:
+            lease = json.load(f)
+        state = _read_pin_entry_state()
+        return (bool(state.get("active"))
+                and float(lease.get("expires_at", 0)) > time.time()
+                and hmac.compare_digest(str(lease.get("token", "")), token)
+                and hmac.compare_digest(str(lease.get("event_id", "")), event_id)
+                and hmac.compare_digest(str(state.get("event_id", "")), event_id))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _publish_pin_entry_state() -> None:
+    """Publish state transitions and digit counts for the phone numpad UI."""
+    global _pin_prompt_signature, _pin_prompt_event_id
+    global _pin_prompt_started_at, _pin_state_last
+
+    active = current_view == "KEYPAD"
+    if active:
+        two_player = (
+            (pending_game_key == "TICTACTOE" and ttt_mode == "2P")
+            or (pending_game_key != "TICTACTOE" and pending_game_2p)
+        )
+        player = ttt_stage if two_player else 0
+        signature = (pending_game_key, player)
+        if signature != _pin_prompt_signature:
+            _clear_web_pin_lease()
+            _pin_prompt_signature = signature
+            _pin_prompt_event_id = secrets.token_urlsafe(12)
+            _pin_prompt_started_at = time.time()
+        title = next((label for label, _cmd, key, _two in GAME_OPTIONS
+                      if key == pending_game_key), pending_game_key.replace("_", " "))
+        payload = {
+            "active": True,
+            "event_id": _pin_prompt_event_id,
+            "started_at": _pin_prompt_started_at,
+            "title": title,
+            "player": player,
+            "count": len(keypad_entered),
+            "error": keypad_error,
+        }
+    else:
+        if _pin_prompt_signature is not None:
+            _clear_web_pin_lease()
+        _pin_prompt_signature = None
+        _pin_prompt_event_id = None
+        _pin_prompt_started_at = 0.0
+        payload = {"active": False}
+
+    if payload == _pin_state_last:
+        return
+    tmp = PIN_ENTRY_STATE_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, separators=(",", ":"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, PIN_ENTRY_STATE_FILE)
+        _pin_state_last = payload
+    except OSError as e:
+        log(f"Could not publish phone PIN state: {e}")
 
 
 def route_remote_key(tok: str) -> None:
@@ -2808,6 +2966,32 @@ def main(stdscr):
                 # All other commands (HOME, CLEAR, etc.) are ignored while locked
                 continue
 
+            # A phone keypad claimant owns all input until it releases the
+            # lease or the TV advances to the next PIN prompt.
+            if isinstance(cmd, tuple) and cmd and cmd[0] == "WEB_PIN":
+                if (current_view != "KEYPAD"
+                        or not _web_pin_token_valid(cmd[1], cmd[2])):
+                    continue
+                pin_key = str(cmd[3]).upper()
+                if len(pin_key) == 1 and pin_key in "0123456789":
+                    coords = next(((ri, row.index(pin_key))
+                                   for ri, row in enumerate(KEYPAD_LAYOUT)
+                                   if pin_key in row), None)
+                elif pin_key == "DEL":
+                    coords = (3, 0)
+                elif pin_key == "OK":
+                    coords = (3, 2)
+                else:
+                    coords = None
+                if coords is None:
+                    continue
+                keypad_row, keypad_col = coords
+                cmd = "SELECT"
+            elif _web_pin_claim_active():
+                # HomeKit, controller and menu commands cannot race the phone's
+                # PIN digits. The claimant controls input exclusively.
+                continue
+
             # ── HOME: return to main menu from anywhere ──────────────
             if cmd == "HOME":
                 current_view = "MENU"
@@ -2947,10 +3131,12 @@ def main(stdscr):
                                 or (pending_game_key != "TICTACTOE" and pending_game_2p)
                             )
                             if two_player and ttt_stage == 1:
-                                # Player 1 verified; keep the keypad up for P2.
+                                # Player 1 verified; publish a fresh first-claim
+                                # window for Player 2 before the message overlay.
                                 ttt_p1 = who
                                 ttt_stage = 2
                                 keypad_entered = keypad_error = ""
+                                _publish_pin_entry_state()
                                 log(f"{pending_game_key} P1: {who}")
                                 show_message(stdscr,
                                              ["", f"Welcome {who}!",
@@ -2959,6 +3145,10 @@ def main(stdscr):
                             else:
                                 log(f"{pending_game_key} unlocked by {who}")
                                 set_highscore_name(pending_game_cmd[0], who)
+                                # Invalidate the PIN prompt and release its phone
+                                # claimant before a game blocks the menu loop.
+                                current_view = "GAMES_MENU"
+                                _publish_pin_entry_state()
                                 if two_player:
                                     log(f"{pending_game_key} 2P: {ttt_p1} vs {who}")
                                     show_message(stdscr,
@@ -2994,6 +3184,9 @@ def main(stdscr):
         if current_view == "ART_RUNNING" and art_stop_time:
             if time.time() >= art_stop_time:
                 current_view = "MENU"
+
+        # Keep portal prompts and the phone keypad in sync with this screen.
+        _publish_pin_entry_state()
 
         # ── Render ──────────────────────────────────────────────────
         if current_view in ("MENU","DURATION_SELECT","GAMES_MENU","CLEAR",

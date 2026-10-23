@@ -108,6 +108,14 @@ KEYBOARD_GUARD_PATH = os.path.join(PITV_DIR, "remote-keyboard-lease.lock")
 KEYBOARD_LEASE_SECONDS = 90
 KEYBOARD_MAX_CHARS = 120
 
+# PIN-keypad prompts are published by tv_menu and share a first-claimant lease
+# across the guest and admin portal processes.
+PIN_ENTRY_STATE_FILE = "/tmp/pitv-pin-entry-state"
+PIN_LEASE_PATH = os.path.join(PITV_DIR, "pin-entry-lease.json")
+PIN_GUARD_PATH = os.path.join(PITV_DIR, "pin-entry-lease.lock")
+PIN_LEASE_SECONDS = 90
+PIN_PROMPT_SECONDS = 10
+
 NAV = {"up": "UP", "down": "DOWN", "left": "LEFT", "right": "RIGHT",
        "ok": "SELECT", "back": "BACK"}
 UDP = {"tv_on": "TV_ON", "tv_off": "TV_OFF",
@@ -562,6 +570,113 @@ def keyboard_lease_status(session_id):
         }
 
 
+def pin_entry_state():
+    """Read the current on-TV player-PIN prompt; never reads or stores the PIN."""
+    try:
+        with open(PIN_ENTRY_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {"active": False}
+    except (OSError, ValueError, TypeError):
+        return {"active": False}
+
+
+@contextmanager
+def _pin_lease_guard():
+    """Serialise PIN-keypad claims across the separate guest/admin processes."""
+    os.makedirs(PITV_DIR, mode=0o700, exist_ok=True)
+    fd = os.open(PIN_GUARD_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _write_pin_lease_locked(lease):
+    """Write only while _pin_lease_guard() is held."""
+    if lease is None:
+        try:
+            os.unlink(PIN_LEASE_PATH)
+        except FileNotFoundError:
+            pass
+        return
+    tmp = PIN_LEASE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(lease, f, separators=(",", ":"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, PIN_LEASE_PATH)
+    os.chmod(PIN_LEASE_PATH, 0o600)
+
+
+def _read_pin_lease_locked(state=None):
+    """Read and expire the exclusive PIN lease while the lease lock is held."""
+    if state is None:
+        state = pin_entry_state()
+    try:
+        with open(PIN_LEASE_PATH, "r", encoding="utf-8") as f:
+            lease = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(lease, dict):
+        _write_pin_lease_locked(None)
+        return None
+    try:
+        expired = float(lease.get("expires_at", 0)) <= time.time()
+    except (TypeError, ValueError):
+        expired = True
+    owner_admin = bool(lease.get("owner_admin"))
+    guest_blocked = not owner_admin and (not guest_mode_on() or guest_locked())
+    prompt_changed = (not state.get("active")
+                      or not hmac.compare_digest(
+                          str(lease.get("event_id", "")),
+                          str(state.get("event_id", ""))))
+    if expired or guest_blocked or prompt_changed:
+        _write_pin_lease_locked(None)
+        return None
+    return lease
+
+
+def pin_entry_status(session_id):
+    """Public-safe prompt state plus whether this browser owns the keypad."""
+    state = pin_entry_state()
+    with _pin_lease_guard():
+        lease = _read_pin_lease_locked(state)
+    mine = bool(lease and session_id and hmac.compare_digest(
+        str(lease.get("session_hash", "")), str(session_id)))
+    try:
+        started_at = float(state.get("started_at", 0) or 0)
+    except (TypeError, ValueError):
+        started_at = 0.0
+    try:
+        count = max(0, min(6, int(state.get("count", 0) or 0)))
+    except (TypeError, ValueError):
+        count = 0
+    expires_in = 0
+    if lease:
+        try:
+            expires_in = max(0, int(float(lease.get("expires_at", 0)) - time.time()))
+        except (TypeError, ValueError):
+            expires_in = 0
+    return {
+        "pin_entry_active": bool(state.get("active") and state.get("event_id")),
+        "pin_prompt_id": str(state.get("event_id", "")),
+        "pin_prompt_started_at": started_at,
+        "pin_prompt_title": str(state.get("title", "PiTV")),
+        "pin_prompt_player": int(state.get("player", 0) or 0),
+        "pin_entry_count": count,
+        "pin_entry_error": str(state.get("error", "")),
+        "pin_busy": bool(lease),
+        "pin_mine": mine,
+        "pin_expires_in": expires_in,
+    }
+
+
 def set_guest_mode(on):
     """Admin toggle: write the state file and notify tv_menu (which keeps the
     Home switch in sync)."""
@@ -604,6 +719,21 @@ box-shadow:0 20px 80px #000}}
 .modal-card h2{{margin-top:0;text-align:center}}
 .modal-card .muted{{line-height:1.45}}
 .modal-card .row{{margin-top:8px}}
+.pin-prompt{{position:fixed;z-index:90;left:12px;right:12px;bottom:12px;margin:auto;
+max-width:440px;display:flex;align-items:center;gap:12px;background:#1b2942;
+border:1px solid #7fd1ff;border-radius:16px;padding:12px;box-shadow:0 10px 35px #000b;
+text-align:left}}
+.pin-prompt[hidden]{{display:none!important}}
+.pin-prompt-copy{{flex:1;min-width:0}}
+.pin-prompt-copy strong{{display:block;font-size:16px}}
+.pin-prompt-copy p{{margin:5px 0 0;font-size:13px}}
+.pin-prompt button{{width:auto;min-width:105px;margin:0;padding:11px;font-size:14px}}
+.pin-phone-pad{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:300px;margin:14px auto}}
+.pin-phone-pad button{{aspect-ratio:1;font-size:23px;padding:8px;margin:0}}
+.pin-entry-display{{font-size:28px;letter-spacing:7px;text-align:center;padding:12px;color:#7fd1ff;
+background:#0b0f1a;border-radius:10px;min-height:54px}}
+.pin-cancel{{background:#7a2a2a}}
+@media(max-width:360px){{.pin-prompt{{align-items:stretch;flex-direction:column}}.pin-prompt button{{width:100%}}}}
 body.locked .card button{{opacity:.35;pointer-events:none;filter:grayscale(1)}}
 a{{color:#7fd1ff}}
 </style></head><body><div class=wrap>{body}</div></body></html>"""
@@ -725,6 +855,25 @@ def controls_body(username):
 <p class=muted><a href="/logout">Sign out</a></p>
 <div id=lockbar class=lockbar hidden>The host has paused the controls.</div>
 <div id=keyboardbar class=lockbar hidden>Someone else has exclusive TV input access. Navigation is temporarily paused.</div>
+<div id=pinPrompt class=pin-prompt hidden role=status aria-live=polite>
+  <div class=pin-prompt-copy><strong>PiTV is waiting for a PIN</strong>
+    <p class=muted id=pinPromptText>Tap to enter the PIN on your phone.</p></div>
+  <button id=pinPromptButton onclick="claimPinEntry()">Enter PIN</button>
+</div>
+<div class=modal id=pinModal hidden>
+  <div class=modal-card role=dialog aria-modal=true aria-labelledby=pinTitle>
+    <h2 id=pinTitle>Enter PIN on your phone</h2>
+    <p class=muted id=pinStatus>Each digit is sent directly to the TV.</p>
+    <div class=pin-entry-display id=pinEntryDisplay>_ _ _ _ _ _</div>
+    <div class=pin-phone-pad>
+      <button onclick="sendPinKey('1')">1</button><button onclick="sendPinKey('2')">2</button><button onclick="sendPinKey('3')">3</button>
+      <button onclick="sendPinKey('4')">4</button><button onclick="sendPinKey('5')">5</button><button onclick="sendPinKey('6')">6</button>
+      <button onclick="sendPinKey('7')">7</button><button onclick="sendPinKey('8')">8</button><button onclick="sendPinKey('9')">9</button>
+      <button onclick="sendPinKey('DEL')">⌫</button><button onclick="sendPinKey('0')">0</button><button onclick="sendPinKey('OK')">OK</button>
+    </div>
+    <button class=pin-cancel onclick="releasePinEntry()">Cancel and release keypad</button>
+  </div>
+</div>
 <div class=modal id=keyboardModal hidden>
   <div class=modal-card role=dialog aria-modal=true aria-labelledby=keyboardTitle>
     <h2 id=keyboardTitle>Type into PiTV</h2>
@@ -748,6 +897,11 @@ def controls_body(username):
 <script>
 var ADMIN = %ADMIN%, POLL = %POLL%;
 var keyboardToken = "";
+var pinToken = "", pinEventId = "";
+var pinSendQueue = Promise.resolve();
+var pinEntryCount = 0, pinLastError = "";
+var pinPromptSeen = "", pinPromptDismissed = "";
+var pinPromptTimer = null;
 function act(a){
   if(document.body.classList.contains('locked') && !ADMIN) return;
   fetch('/action',{method:'POST',
@@ -755,6 +909,155 @@ function act(a){
     body:new URLSearchParams({action:a})}).then(function(r){
       if(r.status===423){sync();}
     });
+}
+function pinLabel(s){
+  var title = s.pin_prompt_title || 'PiTV';
+  return s.pin_prompt_player ? title + ' — Player ' + s.pin_prompt_player : title;
+}
+function dismissPinPrompt(){
+  pinPromptDismissed = pinPromptSeen;
+  var prompt = document.getElementById('pinPrompt');
+  if(prompt) prompt.hidden = true;
+}
+function renderPinPrompt(s){
+  var prompt = document.getElementById('pinPrompt');
+  var message = document.getElementById('pinPromptText');
+  var button = document.getElementById('pinPromptButton');
+  if(!prompt || !message || !button) return;
+  var now = Date.now() / 1000;
+  if(s.pin_prompt_id && s.pin_prompt_id !== pinPromptSeen){
+    pinPromptSeen = s.pin_prompt_id;
+    pinPromptDismissed = "";
+    if(pinPromptTimer) clearTimeout(pinPromptTimer);
+    var eventId = pinPromptSeen;
+    var deadline = (Number(s.pin_prompt_started_at) || now) + 10;
+    pinPromptTimer = setTimeout(function(){
+      if(pinPromptSeen === eventId && !pinToken) prompt.hidden = true;
+    }, Math.max(0, (deadline - now) * 1000));
+  }
+  var deadline = (Number(s.pin_prompt_started_at) || 0) + 10;
+  var inWindow = !!s.pin_entry_active && !!s.pin_prompt_id
+      && now >= (Number(s.pin_prompt_started_at) || 0) - 1 && now < deadline;
+  var visible = inWindow && pinPromptDismissed !== s.pin_prompt_id && !pinToken;
+  prompt.hidden = !visible;
+  if(!s.pin_entry_active){
+    prompt.hidden = true;
+    if(pinToken){
+      pinToken = ""; pinEventId = ""; pinEntryCount = 0; pinLastError = "";
+      document.getElementById('pinModal').hidden = true;
+    }
+    return;
+  }
+  if(s.pin_busy && !s.pin_mine){
+    message.textContent = 'Someone else claimed the keypad first. Their PIN entry has priority.';
+    button.textContent = 'Keypad in use';
+    button.disabled = true;
+  } else {
+    message.textContent = 'Enter the PIN for ' + pinLabel(s) + '. First tap claims the keypad for you.';
+    button.textContent = 'Enter PIN';
+    button.disabled = false;
+  }
+  if(pinToken && pinEventId !== s.pin_prompt_id){
+    pinToken = ""; pinEventId = ""; pinEntryCount = 0; pinLastError = "";
+    document.getElementById('pinModal').hidden = true;
+  }
+}
+function renderPinEntry(){
+  var display = document.getElementById('pinEntryDisplay');
+  if(display) display.textContent = Array.from({length:6},function(_,i){
+    return i < pinEntryCount ? '•' : '_';
+  }).join(' ');
+}
+function claimPinEntry(){
+  if(!state || !state.pin_entry_active || !state.pin_prompt_id) return;
+  var button = document.getElementById('pinPromptButton');
+  button.disabled = true;
+  fetch('/pin/claim',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({event_id:state.pin_prompt_id})})
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+    .then(function(result){
+      if(!result.r.ok){
+        if(state){state.pin_busy=!!result.j.pin_busy;state.pin_mine=false;}
+        renderPinPrompt(state || {});
+        var msg = result.r.status===409
+          ? 'Someone else claimed the keypad first, or the PIN prompt has ended.'
+          : result.r.status===423
+            ? 'Guest controls are locked by the administrator.'
+            : 'Could not claim the TV keypad. Try again.';
+        document.getElementById('pinPromptText').textContent=msg;
+        sync();
+        return;
+      }
+      pinToken=result.j.token||'';
+      pinEventId=result.j.event_id||state.pin_prompt_id;
+      pinEntryCount=Number(result.j.count)||0;
+      pinLastError=(state && state.pin_entry_error)||'';
+      pinPromptDismissed=pinEventId;
+      document.getElementById('pinPrompt').hidden=true;
+      document.getElementById('pinModal').hidden=false;
+      document.getElementById('pinTitle').textContent='Enter PIN — '+pinLabel(state);
+      document.getElementById('pinStatus').textContent='Each digit is sent immediately to the TV.';
+      renderPinEntry();
+    }).catch(function(){
+      button.disabled=false;
+      document.getElementById('pinPromptText').textContent='Could not contact PiTV. Try again.';
+    });
+}
+function sendPinKey(key){
+  if(!pinToken) return;
+  if(key.length===1 && key >= '0' && key <= '9'){
+    if(pinEntryCount >= 6) return;
+    pinEntryCount=Math.min(6,pinEntryCount+1);
+  } else if(key==='DEL'){
+    pinEntryCount=Math.max(0,pinEntryCount-1);
+  }
+  renderPinEntry();
+  document.getElementById('pinStatus').textContent='Sending input to PiTV…';
+  var token=pinToken, eventId=pinEventId;
+  pinSendQueue=pinSendQueue.then(function(){
+    if(!token || token!==pinToken || eventId!==pinEventId) return;
+    return fetch('/pin/input',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({token:token,event_id:eventId,key:key})})
+      .then(function(r){
+        if(!r.ok){
+          pinToken=''; pinEventId=''; document.getElementById('pinModal').hidden=true;
+          document.getElementById('pinStatus').textContent='PIN entry ended or keypad access was lost.';
+          sync(); return;
+        }
+        document.getElementById('pinStatus').textContent='Sent to TV.';
+      });
+  }).catch(function(){
+    document.getElementById('pinStatus').textContent='Could not contact PiTV.';
+  });
+}
+function releasePinEntry(){
+  var token=pinToken, eventId=pinEventId;
+  pinToken=''; pinEventId=''; pinEntryCount=0; pinLastError='';
+  document.getElementById('pinModal').hidden=true;
+  pinPromptDismissed="";
+  if(token){
+    pinSendQueue=pinSendQueue.catch(function(){}).then(function(){
+      return fetch('/pin/release',{method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:new URLSearchParams({token:token,event_id:eventId})});
+    }).then(function(){sync();}).catch(function(){sync();});
+  } else sync();
+}
+function updatePinEntry(s){
+  if(pinToken && (!s.pin_entry_active || s.pin_prompt_id!==pinEventId)){
+    pinToken=''; pinEventId=''; pinEntryCount=0; pinLastError='';
+    document.getElementById('pinModal').hidden=true;
+    pinSendQueue=Promise.resolve();
+  } else if(pinToken && s.pin_prompt_id===pinEventId
+            && s.pin_entry_error && s.pin_entry_error!==pinLastError){
+    pinLastError=s.pin_entry_error;
+    pinEntryCount=Number(s.pin_entry_count)||0;
+    document.getElementById('pinStatus').textContent=s.pin_entry_error;
+    renderPinEntry();
+  }
+  renderPinPrompt(s);
 }
 function renderKeyboardModal(){
   var modal=document.getElementById('keyboardModal');
@@ -893,6 +1196,7 @@ function apply(s){
   if(kb) kb.hidden = !(s.keyboard_busy && !s.keyboard_mine);
   var kbCard = document.getElementById('keyboardCard');
   if(kbCard) kbCard.hidden = !s.keyboard_game_available;
+  updatePinEntry(s);
   renderKeyboardModal();
 }
 function sync(){
@@ -1071,6 +1375,7 @@ class Handler(BaseHTTPRequestHandler):
                 "sky":        sky_on(),
                 "pin":        str(guest_pin(user)),
                 **keyboard,
+                **pin_entry_status(self._keyboard_session_id()),
             })
             return
         if path != "/":
@@ -1109,7 +1414,9 @@ class Handler(BaseHTTPRequestHandler):
                 code=403,
             )
             return
-        if not ADMIN and not guest_mode_on():
+        # Let PIN endpoints return authenticated JSON errors if Guest Mode
+        # has just been switched off, rather than a misleading HTML 200.
+        if not ADMIN and not guest_mode_on() and not path.startswith("/pin/"):
             self._html(gate_body()); return
 
         if path == "/login":
@@ -1181,6 +1488,109 @@ class Handler(BaseHTTPRequestHandler):
                 _last_pair_show = now
                 write_fifo("PAIR_SHOW")
             self.send_response(204); self.end_headers()
+            return
+
+        if path.startswith("/pin/"):
+            user = self._session_user()
+            if not user or (not ADMIN and not guest_mode_on()):
+                self._json({"ok": False, "error": "not_signed_in"}, code=401)
+                return
+            if not ADMIN and guest_locked():
+                self._json({"ok": False, "error": "guest_controls_locked"}, code=423)
+                return
+            session_id = self._keyboard_session_id()
+            if not session_id:
+                self._json({"ok": False, "error": "no_session"}, code=401)
+                return
+
+            if path == "/pin/claim":
+                b = self._body()
+                if b is None:
+                    self._json({"ok": False, "error": "bad_request"}, code=413)
+                    return
+                event_id = b.get("event_id", "")
+                state = pin_entry_state()
+                if not state.get("active") or not hmac.compare_digest(
+                        str(state.get("event_id", "")), event_id):
+                    self._json({"ok": False, "error": "pin_prompt_ended",
+                                "pin_busy": False}, code=409)
+                    return
+                with _pin_lease_guard():
+                    state = pin_entry_state()
+                    if not state.get("active") or not hmac.compare_digest(
+                            str(state.get("event_id", "")), event_id):
+                        self._json({"ok": False, "error": "pin_prompt_ended",
+                                    "pin_busy": False}, code=409)
+                        return
+                    lease = _read_pin_lease_locked(state)
+                    if lease and not hmac.compare_digest(
+                            str(lease.get("session_hash", "")), session_id):
+                        self._json({"ok": False, "error": "pin_keypad_in_use",
+                                    "pin_busy": True}, code=409)
+                        return
+                    token = (lease.get("token") if lease else None) or secrets.token_urlsafe(24)
+                    lease = {
+                        "session_hash": session_id,
+                        "event_id": event_id,
+                        "token": token,
+                        "owner_admin": bool(ADMIN),
+                        "expires_at": time.time() + PIN_LEASE_SECONDS,
+                    }
+                    _write_pin_lease_locked(lease)
+                try:
+                    count = max(0, min(6, int(state.get("count", 0) or 0)))
+                except (TypeError, ValueError):
+                    count = 0
+                self._json({"ok": True, "token": token, "event_id": event_id,
+                            "expires_in": PIN_LEASE_SECONDS, "count": count})
+                return
+
+            b = self._body()
+            if b is None:
+                self._json({"ok": False, "error": "bad_request"}, code=413)
+                return
+            token = b.get("token", "")
+            event_id = b.get("event_id", "")
+            if path == "/pin/release":
+                with _pin_lease_guard():
+                    lease = _read_pin_lease_locked()
+                    if (lease
+                            and hmac.compare_digest(str(lease.get("session_hash", "")), session_id)
+                            and hmac.compare_digest(str(lease.get("token", "")), token)
+                            and hmac.compare_digest(str(lease.get("event_id", "")), event_id)):
+                        _write_pin_lease_locked(None)
+                self.send_response(204); self.end_headers()
+                return
+
+            if path == "/pin/input":
+                key = b.get("key", "").upper()
+                if not (key in {"DEL", "OK"} or (len(key) == 1 and key in "0123456789")):
+                    self._json({"ok": False, "error": "unsupported_key"}, code=400)
+                    return
+                with _pin_lease_guard():
+                    state = pin_entry_state()
+                    lease = _read_pin_lease_locked(state)
+                    valid = bool(
+                        lease and state.get("active")
+                        and hmac.compare_digest(str(lease.get("session_hash", "")), session_id)
+                        and hmac.compare_digest(str(lease.get("token", "")), token)
+                        and hmac.compare_digest(str(lease.get("event_id", "")), event_id)
+                        and hmac.compare_digest(str(state.get("event_id", "")), event_id)
+                    )
+                    if not valid:
+                        self._json({"ok": False, "error": "pin_lease_expired_or_prompt_ended",
+                                    "pin_busy": bool(lease)}, code=409)
+                        return
+                    lease["expires_at"] = time.time() + PIN_LEASE_SECONDS
+                    _write_pin_lease_locked(lease)
+                    sent = write_fifo(f"PINKEY {token} {event_id} {key}")
+                if not sent:
+                    self._json({"ok": False, "error": "pitv_menu_unavailable"}, code=503)
+                else:
+                    self.send_response(204); self.end_headers()
+                return
+
+            self._json({"ok": False, "error": "not_found"}, code=404)
             return
 
         if path.startswith("/keyboard/"):
@@ -1303,6 +1713,11 @@ class Handler(BaseHTTPRequestHandler):
             if b is None:
                 self.send_response(413); self.end_headers(); return
             action = b.get("action", "")
+            # A claimed phone PIN keypad has exclusive input priority over web
+            # D-pad commands, including commands from the owner page.
+            if action in NAV and pin_entry_status(self._keyboard_session_id())["pin_busy"]:
+                self._json({"ok": False, "error": "pin_keypad_in_use"}, code=423)
+                return
             # While somebody owns the shared TV keyboard, reject competing web
             # navigation. Power and administrator safety controls remain usable.
             if action in (set(NAV) | set(SKY_ACTIONS) | {"input_sky", "input_pitv"}):
