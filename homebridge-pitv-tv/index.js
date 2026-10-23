@@ -20,7 +20,7 @@
 // keyed on CONTROL_KEY inside the private central PiTV state file. Homebridge
 // can retrieve only that key through the restricted helper installed by
 // deploy.sh; it cannot read the stored accounts or other persistent settings.
-// Explicit `controlKey`/`controlKeyFile` platform options remain overrides.
+// This keeps the canonical key in one place and avoids a second saved copy.
 //   TV_ON | TV_OFF        -> power
 //   CEC <tx frame>        -> input switching
 //   KEY <TOKEN>           -> menu navigation
@@ -101,21 +101,10 @@ class PiTVTelevisionPlatform {
     this.accessories.push(accessory);
   }
 
-  // Read CONTROL_KEY without exposing the rest of the central state file.
-  // deploy.sh permits the Homebridge service user to invoke only this helper.
+  // Read CONTROL_KEY from the central state file without exposing the rest
+  // of that file or maintaining a second persistent copy in Homebridge config.
+  // deploy.sh permits this service user to invoke only the fixed reader helper.
   loadControlKey() {
-    if (this.config.controlKey) return String(this.config.controlKey).trim();
-
-    if (this.config.controlKeyFile) {
-      try {
-        const custom = fs.readFileSync(this.config.controlKeyFile, 'utf8').trim();
-        if (custom) {
-          this.log.info(`Control key loaded from configured file ${this.config.controlKeyFile}.`);
-          return custom;
-        }
-      } catch (e) { /* use the private central state reader below */ }
-    }
-
     try {
       const key = require('child_process').execFileSync(
         '/usr/bin/sudo',
@@ -129,8 +118,8 @@ class PiTVTelevisionPlatform {
     } catch (e) { /* helper not installed or state unavailable */ }
 
     this.log.error(
-      'No control key: tv_menu.py will reject every command from this plugin. '
-      + 'Run ./deploy.sh on the Pi to install the restricted central-state reader, '
+      'No central control key: tv_menu.py will reject every command from this plugin. '
+      + 'Run ./deploy.sh on the Pi to install the restricted state reader, '
       + 'then restart Homebridge. Check it with: screen control status');
     return '';
   }
