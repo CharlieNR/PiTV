@@ -26,7 +26,6 @@ PiTV turns a Raspberry Pi connected to a television into a local TV-control and 
 - **Local command line:** the `screen` command wrapper.
 - **Optional controllers:** Bluetooth gamepad support and virtual keyboard input for console games.
 
-PiTV does **not** configure router port forwarding, Tailscale Funnel, Cloudflare Tunnel or other public tunnels. Those are separate network settings.
 
 ## How it works
 
