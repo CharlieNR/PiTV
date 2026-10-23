@@ -22,7 +22,7 @@ PiTV also includes admin and guest web pages. The guest page is handy when frien
 - **Admin page:** manage accounts and TV controls from a browser.
 - **Guest page:** let friends use a phone-friendly remote when Guest Mode is enabled.
 - **Game controllers:** optional Bluetooth controllers and game input support.
-- **Imposter party game:** built-in multiplayer word-bluffing game with local QR joining, PIN verification, secret roles, timed voting and animated results.
+- **Imposter party game:** built-in multiplayer word-bluffing game. Its join QR is generated as a PNG and displayed as real pixels through the Linux framebuffer image viewer, with PIN verification, secret roles, timed voting and animated results.
 
 ## Installation
 
