@@ -35,13 +35,6 @@ PiTV turns a Raspberry Pi connected to a television into a local TV-control and 
 
 HDMI-CEC can request TV power changes and select an HDMI input. An *Active Source* message can ask a TV to switch inputs; it does **not** emulate every button on a Fire TV Stick or other HDMI device.
 
-### Homebridge and signed commands
-
-The optional Homebridge plugin sends commands to `127.0.0.1:8129` over UDP. That address is the Pi itself, not a command listener exposed directly to other LAN computers. The listener verifies a shared secret and signature before accepting commands.
-
-Signed messages contain a timestamp, a one-use nonce, a signature and the command. Messages that are unsigned, malformed, too old, incorrectly signed or replayed are rejected.
-
-The normal shared key is `/etc/pitv/control.key`. The deployment script creates it if missing and configures restricted group access using the `pitv` group. `~/.pitv/control-key` is a fallback for local PiTV processes. The Homebridge plugin normally reads `/etc/pitv/control.key` unless its configuration overrides that path or supplies the key directly.
 
 ### Web portals and Guest Mode
 
