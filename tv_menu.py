@@ -29,7 +29,7 @@ except ImportError:
     EVDEV_OK = False
 
 # ChronosVer: vYYYY.MAJOR.MINOR.BUG
-VERSION = "v2026.2.3.17"
+VERSION = "v2026.2.3.18"
 
 # ─────────────────────────────────────────────────────────────────────
 # LOG SYSTEM
@@ -1103,38 +1103,148 @@ def _imposter_local_ip() -> str:
     return "pitv.local"
 
 
-def _imposter_qr_matrix(url):
-    """Return a standards-compliant QR module matrix using Python's qrcode library.
+IMPOSTER_JOIN_IMAGE = "/tmp/pitv-imposter-join.png"
 
-    The matrix contains the four-module quiet zone required around a QR code.
-    It is rendered directly by curses; no terminal-art output is parsed.
+
+def _imposter_render_join_image(url, joined, total):
+    """Generate a real PNG containing the QR code and join-screen text.
+
+    The PNG is shown by fbi on the Linux framebuffer. It is not converted into
+    terminal characters or curses half-blocks, so the QR modules are actual
+    black-and-white pixels on the TV.
     """
     try:
         import qrcode
         from qrcode.constants import ERROR_CORRECT_M
+        from PIL import Image, ImageDraw, ImageFont
+
+        width, height = 1280, 720
+        canvas = Image.new("RGB", (width, height), (9, 17, 31))
+        draw = ImageDraw.Draw(canvas)
+
+        font_dir = "/usr/share/fonts/truetype/dejavu"
+        def load_font(filename, size):
+            try:
+                return ImageFont.truetype(os.path.join(font_dir, filename), size)
+            except OSError:
+                return ImageFont.load_default()
+
+        title_font = load_font("DejaVuSans-Bold.ttf", 34)
+        subtitle_font = load_font("DejaVuSans.ttf", 19)
+        count_font = load_font("DejaVuSans-Bold.ttf", 25)
+        detail_font = load_font("DejaVuSans.ttf", 18)
+        url_font = load_font("DejaVuSans.ttf", 15)
+
+        def centered(text, y, font, fill):
+            text = str(text)
+            bounds = draw.textbbox((0, 0), text, font=font)
+            text_width = bounds[2] - bounds[0]
+            draw.text(((width - text_width) // 2, y), text, font=font, fill=fill)
 
         qr = qrcode.QRCode(
             version=None,
             error_correction=ERROR_CORRECT_M,
-            box_size=1,
+            box_size=16,
             border=4,
         )
         qr.add_data(url)
         qr.make(fit=True)
-        matrix = qr.get_matrix()
+        qr_image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        qr_size = 520
+        qr_image = qr_image.resize((qr_size, qr_size), resample=Image.Resampling.NEAREST)
+        canvas.paste(qr_image, ((width - qr_size) // 2, 94))
 
-        # Reject malformed/non-square results rather than showing a misleading
-        # QR-like pattern that a phone camera cannot decode.
-        if not matrix or len(matrix) < 29 or any(len(row) != len(matrix) for row in matrix):
-            log("Imposter QR generator returned an invalid matrix")
-            return None
-        return [[bool(module) for module in row] for row in matrix]
-    except ImportError as e:
-        log(f"Python qrcode module unavailable: {e}")
-        return None
+        centered("IMPOSTER — SCAN TO JOIN", 17, title_font, (255, 255, 255))
+        centered("Each player scans with their phone camera, then enters their own PIN.", 59,
+                 subtitle_font, (174, 218, 255))
+        centered(f"Players connected: {joined}/{total}", 621, count_font, (151, 255, 188))
+        centered("Enter your PIN again on the page to receive your private role and word.", 654,
+                 detail_font, (224, 233, 246))
+        centered(url, 690, url_font, (158, 177, 204))
+
+        temporary = f"{IMPOSTER_JOIN_IMAGE}.{os.getpid()}.tmp"
+        canvas.save(temporary, format="PNG", optimize=True)
+        os.replace(temporary, IMPOSTER_JOIN_IMAGE)
+        return IMPOSTER_JOIN_IMAGE
     except Exception as e:
-        log(f"Imposter QR generation failed: {e}")
+        log(f"Imposter PNG generation failed: {e}")
+        try:
+            if "temporary" in locals() and os.path.exists(temporary):
+                os.unlink(temporary)
+        except OSError:
+            pass
         return None
+
+
+def _imposter_start_join_image(stdscr, image_path):
+    """Switch from curses to a real framebuffer image viewer for the join QR."""
+    if not os.path.exists("/dev/fb0"):
+        log("Imposter QR image cannot be displayed: /dev/fb0 is missing")
+        return None
+    if not shutil.which("fbi"):
+        log("Imposter QR image cannot be displayed: fbi is not installed")
+        return None
+
+    try:
+        curses.def_prog_mode()
+        curses.endwin()
+        _reset_terminal()
+        with open(LOG_PATH, "a") as viewer_log:
+            proc = subprocess.Popen(
+                [
+                    "fbi", "--vt", "1", "--device", "/dev/fb0",
+                    "--noverbose", "--nointeractive", "--autozoom",
+                    "--timeout", "3600", image_path,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=viewer_log,
+                close_fds=True,
+            )
+        # Let fbi initialise and report permission/device errors before treating
+        # the image as visible.
+        time.sleep(0.35)
+        if proc.poll() is not None:
+            log(f"Imposter framebuffer image viewer exited during startup (code {proc.returncode}); see {LOG_PATH}")
+            try:
+                curses.reset_prog_mode()
+                curses.curs_set(0)
+            except curses.error:
+                pass
+            return None
+        log("Imposter QR displayed as a PNG through the framebuffer")
+        return proc
+    except Exception as e:
+        log(f"Could not launch Imposter framebuffer image viewer: {e}")
+        try:
+            curses.reset_prog_mode()
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        return None
+
+
+def _imposter_stop_join_image(stdscr, proc):
+    """Stop the bitmap viewer and restore the saved curses display mode."""
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+        except Exception as e:
+            log(f"Error stopping Imposter framebuffer viewer: {e}")
+    try:
+        curses.reset_prog_mode()
+        curses.curs_set(0)
+        stdscr.erase()
+        stdscr.refresh()
+    except curses.error:
+        pass
 
 
 def _imposter_center(stdscr,y,text,attr=0):
@@ -1144,35 +1254,6 @@ def _imposter_center(stdscr,y,text,attr=0):
     if len(text)>w-2: text=text[:max(0,w-5)]+"…"
     try: stdscr.addstr(y,max(0,(w-len(text))//2),text,attr)
     except curses.error: pass
-
-
-def _imposter_draw_join(stdscr,matrix,url,joined,total):
-    h,w=stdscr.getmaxyx()
-    stdscr.erase()
-    _imposter_center(stdscr,0,"IMPOSTER — SCAN TO JOIN",curses.color_pair(5)|curses.A_BOLD)
-    _imposter_center(stdscr,1,"Each player scans and enters their own PIN",curses.color_pair(3)|curses.A_DIM)
-    if not matrix:
-        _imposter_center(stdscr,5,"QR unavailable — open this address:")
-        _imposter_center(stdscr,7,url,curses.A_BOLD)
-        _imposter_center(stdscr,10,f"Players connected: {joined}/{total}",curses.color_pair(2)|curses.A_BOLD)
-        stdscr.refresh();return
-    rows,cols=len(matrix),max(map(len,matrix))
-    top,left=2,max(0,(w-cols)//2)
-    half=(rows+1)//2
-    if cols>w-2 or top+half+3>h:
-        _imposter_center(stdscr,5,"QR does not fit this terminal; open:")
-        _imposter_center(stdscr,7,url,curses.A_BOLD);stdscr.refresh();return
-    for y in range(0,rows,2):
-        for x in range(cols):
-            a=bool(matrix[y][x]);b=bool(matrix[y+1][x]) if y+1<rows else False
-            ch,attr=(" ",curses.color_pair(7)) if a and b else (" ",curses.color_pair(6)) if not a and not b else ("▀",curses.color_pair(6)) if a else ("▄",curses.color_pair(6))
-            try: stdscr.addstr(top+y//2,left+x,ch,attr)
-            except curses.error: pass
-    y=top+half
-    _imposter_center(stdscr,y,f"Players connected: {joined}/{total}",curses.color_pair(2)|curses.A_BOLD)
-    _imposter_center(stdscr,y+1,"Scan with your phone camera; enter your PIN again.",curses.color_pair(3)|curses.A_DIM)
-    _imposter_center(stdscr,y+2,url,curses.A_DIM)
-    stdscr.refresh()
 
 
 def _imposter_draw_lines(stdscr,title,lines):
@@ -1227,9 +1308,11 @@ def run_imposter(stdscr,players: list[str]) -> None:
     try:pitv_imposter.create_game(game_id,players,url)
     except ValueError as e:
         show_message(stdscr,["IMPOSTER",str(e)],color_pair=1,duration=3.0);return
-    matrix=_imposter_qr_matrix(url)
     prior=controller_mode;controller_mode="GAME_INTERNAL";input_queue.clear()
     choice=0;drawn=None;last_draw=0.0;results_started=None
+    join_viewer=None
+    join_image_joined=None
+    join_attempted_count=None
     log(f"Imposter started with {len(players)} players")
     try:
         while True:
@@ -1254,12 +1337,48 @@ def run_imposter(stdscr,players: list[str]) -> None:
                     pitv_imposter.next_round(game_id);choice=0
             pitv_imposter.advance_deadlines(game_id)
             state=pitv_imposter.read_state();phase=str(state.get("phase","join"));now=time.time()
+            if phase!="join" and join_viewer is not None:
+                _imposter_stop_join_image(stdscr,join_viewer)
+                join_viewer=None
+                join_image_joined=None
+                join_attempted_count=None
+                drawn=None
+            joined_count=sum(1 for p in state.get("players",[]) if p.get("joined"))
+            join_needs_refresh=(phase=="join" and (
+                (join_viewer is None and join_attempted_count!=joined_count)
+                or (join_viewer is not None and
+                    (joined_count!=join_image_joined or join_viewer.poll() is not None))
+            ))
             due=now-last_draw >= (0.30 if phase in ("vote","results") else 0.45)
             sig=(phase,state.get("joined_count"),state.get("round_number"),state.get("turn_index"),choice,
                  tuple((x.get("name"),x.get("count")) for x in state.get("results",[])))
-            if due and (sig!=drawn or phase in ("vote","results")):
+            if due and (sig!=drawn or phase in ("vote","results") or join_needs_refresh):
                 if phase=="join":
-                    _imposter_draw_join(stdscr,matrix,url,sum(1 for p in state["players"] if p.get("joined")),len(players))
+                    if join_needs_refresh:
+                        image_path=_imposter_render_join_image(url,joined_count,len(players))
+                        if join_viewer is not None:
+                            _imposter_stop_join_image(stdscr,join_viewer)
+                            join_viewer=None
+                        join_attempted_count=joined_count
+                        join_image_joined=None
+                        if image_path:
+                            join_viewer=_imposter_start_join_image(stdscr,image_path)
+                            if join_viewer is not None:
+                                join_image_joined=joined_count
+                            else:
+                                _imposter_draw_lines(stdscr,"JOIN QR DISPLAY ERROR",[
+                                    "A QR PNG was generated, but the framebuffer viewer could not display it.",
+                                    "Check /tmp/pitv.log and confirm the Pi has /dev/fb0 and video-group access.",
+                                    url,
+                                    "No character-based QR substitute is being shown.",
+                                ])
+                        else:
+                            _imposter_draw_lines(stdscr,"QR IMAGE GENERATION ERROR",[
+                                "PiTV could not create the QR PNG image.",
+                                "Check /tmp/pitv.log for the Python QR/Pillow error.",
+                                url,
+                                "No character-based QR substitute is being shown.",
+                            ])
                 elif phase=="choose_word":
                     _imposter_draw_lines(stdscr,"IMPOSTER",["All players are connected.","The word is being chosen on a phone.","The imposter does not receive the word.","Waiting for the word chooser to press Enter."])
                 elif phase=="round":
@@ -1287,6 +1406,8 @@ def run_imposter(stdscr,players: list[str]) -> None:
                 drawn=sig;last_draw=time.time()
             time.sleep(0.08)
     finally:
+        if join_viewer is not None:
+            _imposter_stop_join_image(stdscr,join_viewer)
         pitv_imposter.end_game(game_id);input_queue.clear();controller_mode=prior
 
 
