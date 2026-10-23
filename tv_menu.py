@@ -2629,7 +2629,7 @@ def draw_keypad(stdscr, game_name, entered, error, is_lock=False):
     hint = "Enter your player PIN"
     if is_lock:
         hint = "Enter emergency code to unlock system"
-    controls = "D-pad/Stick: move   A: enter   B: delete (or back when empty)"
+    controls = "Remote: arrows/Select/Back   Pad: D-pad/A/B"
     try:
         stdscr.addstr(gy+9,  max(0,(max_x-len(hint))//2),     hint,     curses.color_pair(3)|curses.A_DIM)
         stdscr.addstr(gy+10, max(0,(max_x-len(controls))//2), controls, curses.color_pair(3)|curses.A_DIM)
