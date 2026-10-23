@@ -630,6 +630,18 @@ def listen_fifo():
 
 TV_STATE_FILE  = "/tmp/pitv-tv-state"
 TV_INPUT_FILE  = "/tmp/pitv-tv-input"
+GAME_STATE_FILE = "/tmp/pitv-game-state"
+
+
+def _set_external_game_state(active: bool) -> None:
+    """Tell the local web portals when an external game can accept typing."""
+    try:
+        with open(GAME_STATE_FILE, "w", encoding="ascii") as f:
+            f.write("on" if active else "off")
+    except OSError:
+        pass
+
+
 tv_power_state = "unknown"
 tv_input_phys  = None
 
@@ -1410,6 +1422,7 @@ def listen_cec_udp():
             time.sleep(0.5)
 
 
+_set_external_game_state(False)  # discard stale state if tv_menu restarted
 threading.Thread(target=listen_fifo,        daemon=True).start()
 threading.Thread(target=listen_cec_remote,  daemon=True).start()
 threading.Thread(target=listen_controllers, daemon=True).start()
@@ -1600,6 +1613,7 @@ def run_game(stdscr, cmd_list: list):
     # While the game runs the controller listener must stop injecting menu
     # commands — the mapper delivers movement as real key events instead.
     controller_mode = "GAME_EXTERNAL"
+    _set_external_game_state(True)
     _current_game   = binary
     game_log = None
     try:
@@ -1635,6 +1649,7 @@ def run_game(stdscr, cmd_list: list):
             mapper_proc.terminate()
     finally:
         controller_mode = "MENU"
+        _set_external_game_state(False)
         _current_game   = None
         for f in (mapper_log, game_log):
             if f:
