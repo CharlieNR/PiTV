@@ -7,6 +7,7 @@ set -e
 PITV_SERVICES_STOPPED=0
 pitv_deploy_exit() {
     local rc=$?
+    trap - EXIT
     if [[ "$rc" -ne 0 && "$PITV_SERVICES_STOPPED" -eq 1 ]]; then
         echo "Deployment failed; attempting to restart the PiTV services..."
         sudo systemctl start pitv-menu.service pitv-guest.service pitv-admin.service 2>/dev/null || true
