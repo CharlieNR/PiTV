@@ -79,10 +79,13 @@ git -C "$REPO" pull --ff-only origin "$TARGET_BRANCH"
 
 cd "$REPO"
 echo "Deploying the updated '$TARGET_BRANCH' version..."
-PITV_SKIP_REBOOT_PROMPT=1 ./deploy.sh
+./deploy.sh
+
+# Return the user's shell to their home directory after deployment.
+cd "$HOME"
 
 echo
 echo "PiTV update complete on branch '$TARGET_BRANCH'."
 echo "Private settings backup: $BACKUP_DIR"
-echo "This update did not automatically reboot the Pi."
-echo "If deployment says a reboot is required, run: sudo reboot"
+echo "Returned to: $HOME"
+echo "The deploy script offered the normal reboot prompt; no reboot was forced."
