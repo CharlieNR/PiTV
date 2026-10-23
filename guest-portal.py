@@ -39,6 +39,7 @@ import socket
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -1237,14 +1238,11 @@ class Handler(BaseHTTPRequestHandler):
                         and hmac.compare_digest(str(lease.get("token", "")), token)
                     )
                     if not valid:
-                        keyboard = keyboard_lease_status(session_id) if False else {
-                            "keyboard_busy": bool(lease),
-                            "keyboard_mine": False,
-                        }
                         self._json({
                             "ok": False,
                             "error": "keyboard_lease_expired_or_owned_by_another_user",
-                            **keyboard,
+                            "keyboard_busy": bool(lease),
+                            "keyboard_mine": False,
                         }, code=409)
                         return
                     lease["expires_at"] = time.time() + KEYBOARD_LEASE_SECONDS
