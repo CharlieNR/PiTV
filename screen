@@ -49,6 +49,10 @@ Player PINs (unlock locked games; the log records who played):
   screen pin remove <name>              delete a person's PIN
   screen pin rename <old> <new>         rename a person
 
+Updates:
+  screen update                         update from the experimental branch
+  screen update safe                    update from the stable main branch
+
 System:
   screen version                        show the PiTV version
   screen restart "<reason>"             reboot the Raspberry Pi and report the reason
@@ -292,6 +296,30 @@ case "$CMD" in
             remove) exec python3 /opt/pitv/guest-admin.py admin-remove "${3:-}" ;;
             *) echo "Usage: screen admin <password set|list|remove> ..." >&2; exit 1 ;;
         esac
+        ;;
+
+    update)
+        case "${2:-}" in
+            "")
+                UPDATE_BRANCH="experimental"
+                ;;
+            safe)
+                UPDATE_BRANCH="main"
+                ;;
+            *)
+                echo "Usage: screen update [safe]" >&2
+                exit 1
+                ;;
+        esac
+
+        UPDATE_REPO="${PITV_REPO:-$HOME/PiTV}"
+        UPDATE_SCRIPT="$UPDATE_REPO/update.sh"
+        if [[ ! -f "$UPDATE_SCRIPT" ]]; then
+            echo "PiTV updater not found: $UPDATE_SCRIPT" >&2
+            echo "Expected the repository in ~/PiTV; set PITV_REPO if it is elsewhere." >&2
+            exit 1
+        fi
+        exec /bin/bash "$UPDATE_SCRIPT" "$UPDATE_BRANCH"
         ;;
 
     version)
