@@ -1487,6 +1487,7 @@ def listen_cec_udp():
 
 
 _set_external_game_state(False)  # discard stale state if tv_menu restarted
+_clear_web_keyboard_lease()  # leases never survive a menu-service restart
 threading.Thread(target=listen_fifo,        daemon=True).start()
 threading.Thread(target=listen_cec_remote,  daemon=True).start()
 threading.Thread(target=listen_controllers, daemon=True).start()
