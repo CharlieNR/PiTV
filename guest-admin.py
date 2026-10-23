@@ -11,7 +11,9 @@ Invoked by `screen guest ...` and `screen pin guest rotate all`.
   screen guest lock on|off|status                   pause the guests' buttons
   screen pin guest rotate all                       fresh PINs for all guests
 
-Data (device-only, never committed): ~/.pitv/guests.json, ~/.pitv/pins.json
+Persistent data (device-only, never committed): ~/.pitv/pitv-state.json.
+pitv_state.py stores accounts, hashed passwords, player PINs and shared secrets
+in named sections of that single file.
 Each guest has a PBKDF2-hashed password (pitv_secrets.hash_password), an NFC
 auto-login token, and a player PIN (shown in the portal, works on the game
 keypad).
