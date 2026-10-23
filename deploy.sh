@@ -2,6 +2,19 @@
 # Exit on any error
 set -e
 
+# If deployment fails after stopping the PiTV services, make a best effort to
+# bring them back up instead of leaving the TV menu and portals stopped.
+PITV_SERVICES_STOPPED=0
+pitv_deploy_exit() {
+    local rc=$?
+    if [[ "$rc" -ne 0 && "$PITV_SERVICES_STOPPED" -eq 1 ]]; then
+        echo "Deployment failed; attempting to restart the PiTV services..."
+        sudo systemctl start pitv-menu.service pitv-guest.service pitv-admin.service 2>/dev/null || true
+    fi
+    exit "$rc"
+}
+trap pitv_deploy_exit EXIT
+
 echo "Deploying Pi TV updates..."
 
 # ── UxPlay version / iOS compatibility ─────────────────────────────
@@ -95,6 +108,12 @@ sudo mkdir -p /opt/pitv
 sudo cp -f *.sh *.py *.service /opt/pitv/ 2>/dev/null || true
 sudo cp -f .gitignore VERSION /opt/pitv/ 2>/dev/null || true
 
+# A previous interrupted deployment can leave /opt/pitv or a newly copied
+# script unreadable to the normal PiTV account. Make the code readable/traversable
+# before running state initialisation as that account.
+sudo chmod 755 /opt/pitv
+sudo chmod 755 /opt/pitv/*.py /opt/pitv/*.sh
+
 # Copy the Homebridge TV plugin folder AND reinstall it into Homebridge.
 # npm copies the plugin at install time, so refreshing /opt/pitv alone doesn't
 # update the running plugin — Homebridge must reinstall it from that path.
@@ -143,12 +162,14 @@ sudo usermod -aG pitv "$PITV_USER" 2>/dev/null || true
 
 # Stop the current services before migrating and removing their old live files.
 sudo systemctl stop pitv-menu.service pitv-guest.service pitv-admin.service 2>/dev/null || true
+PITV_SERVICES_STOPPED=1
 
 STATE_FILE="$PITV_HOME/.pitv/pitv-state.json"
 if sudo -u "$PITV_USER" -H test -f "$STATE_FILE"; then
     echo "Central state file already exists; deploy.sh will not modify or recreate it."
 else
-    STATE_RESULT="$(sudo -u "$PITV_USER" -H /usr/bin/python3 /opt/pitv/pitv_state.py ensure)"
+    STATE_RESULT="$(sudo -u "$PITV_USER" -H /usr/bin/env PITV_STATE_FILE="$STATE_FILE" \
+        /usr/bin/python3 /opt/pitv/pitv_state.py ensure)"
     case "$STATE_RESULT" in
         CREATED) echo "Created central state file and imported existing PiTV accounts/settings." ;;
         EXISTS)  echo "Central state file was created by another process; left it untouched." ;;
@@ -206,6 +227,7 @@ sudo systemctl restart pitv-menu.service
 sudo systemctl enable pitv-guest.service pitv-admin.service 2>/dev/null || true
 sudo systemctl restart pitv-guest.service
 sudo systemctl restart pitv-admin.service
+PITV_SERVICES_STOPPED=0
 
 echo "----------------------------------------"
 echo "Deploy complete! All files synced to /opt/pitv/"
