@@ -2,12 +2,11 @@
 """
 /opt/pitv/pitv_secrets.py — shared secret handling for PiTV.
 
-One place for the two things every other script needs to agree on:
+One place for values every other script needs to agree on:
 
-  * the **emergency code** (the master that unlocks a locked keypad and a full
-    lockdown). It lives in ~/.pitv/emergency-code — device-only, never
-    committed — and is read fresh on every use, so `screen emergency set`
-    applies without restarting anything.
+  * the **emergency PIN** (the master that unlocks a locked keypad and a full
+    lockdown). It lives under EMERGENCY_PIN in ~/.pitv/pitv-state.json,
+    device-only and never committed, and is read fresh on every use.
   * **password hashing** for the guest and admin portals: PBKDF2-HMAC-SHA256
     with a per-record salt, replacing the single unsalted-round SHA-256 that
     was there before. Old records still verify and are upgraded in place the
