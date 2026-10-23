@@ -2153,7 +2153,9 @@ def run_mirror(stdscr):
             except OSError:
                 pass
         _cleanup_files()
-        stdscr.nodelay(False)
+        # Return to the main menu's non-blocking input mode. Leaving nodelay
+        # disabled makes the main loop appear frozen until another key arrives.
+        stdscr.nodelay(True)
         stdscr.clear()
         stdscr.refresh()
         log("Music receiver: stopped")
