@@ -131,7 +131,9 @@ if [[ "$FORCE_RESET" -eq 1 ]]; then
         "$HOME/.pitv/emergency-code" \
         "$HOME/.pitv/control-key" \
         "$HOME/.pitv/portal-secret" \
-        "$HOME/.pitv/admin-secret"
+        "$HOME/.pitv/admin-secret" \
+        "$HOME/.pitv/remote-keyboard-lease.json" \
+        "$HOME/.pitv/remote-keyboard-lease.lock"
     sudo rm -f /etc/pitv/control.key
     echo "Saved PiTV state deleted; deployment will create a fresh default save file."
     echo "No PiTV account/settings backup was created."
