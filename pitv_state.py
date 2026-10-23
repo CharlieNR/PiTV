@@ -209,19 +209,27 @@ def save_section(name: str, value: Any) -> None:
     write_value(name, value)
 
 
+def _section_for_name(path_or_name: str) -> str | None:
+    name = os.path.basename(path_or_name)
+    if name in _LEGACY_SECTIONS:
+        return _LEGACY_SECTIONS[name]
+    known = set(_LEGACY_SECTIONS.values())
+    return name if name in known else None
+
+
 def load_named(path: str, default: Any = None) -> Any:
-    """Compatibility read for callers still passing an old data-file path."""
-    section = _LEGACY_SECTIONS.get(os.path.basename(path))
+    """Read a state section by its canonical name or an old filename."""
+    section = _section_for_name(path)
     if section is None:
         return default
     return load_section(section, default)
 
 
 def save_named(path: str, value: Any) -> None:
-    """Compatibility write for callers still passing an old data-file path."""
-    section = _LEGACY_SECTIONS.get(os.path.basename(path))
+    """Write a state section by its canonical name or an old filename."""
+    section = _section_for_name(path)
     if section is None:
-        raise ValueError(f"Not a persistent PiTV state path: {path}")
+        raise ValueError(f"Not a persistent PiTV state section: {path}")
     save_section(section, value)
 
 
