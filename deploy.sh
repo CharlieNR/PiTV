@@ -185,17 +185,11 @@ if ! python3 /opt/pitv/pin-admin.py emergency status >/dev/null 2>&1; then
     echo
 fi
 
-# The interactive installer offers a reboot; the screen updater skips
-# this prompt so updates never unexpectedly disconnect the caller.
-if [ "${PITV_SKIP_REBOOT_PROMPT:-0}" = "1" ]; then
-    echo "Reboot prompt skipped by PiTV updater."
-    echo "If any newly installed component requires a reboot, run: sudo reboot"
+# Keep the original interactive reboot choice for both manual deploys and updates.
+read -p "Do you want to reboot the Raspberry Pi now? [Y/n]: " answer
+if [ "$answer" = "Y" ]; then
+    echo "Rebooting Pi..."
+    sudo reboot
 else
-    read -p "Do you want to reboot the Raspberry Pi now? [Y/n]: " answer
-    if [ "$answer" = "Y" ]; then
-        echo "Rebooting Pi..."
-        sudo reboot
-    else
-        echo "Reboot skipped."
-    fi
+    echo "Reboot skipped."
 fi
