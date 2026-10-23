@@ -2,7 +2,7 @@
   "pluginAlias": "PiTVTelevision",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Exposes the Pi's HDMI-CEC TV to HomeKit as a Television accessory (power, input switching, and remote-key navigation of the PiTV menu). Published as an external accessory so it appears as a TV tile, not inside the bridge. Commands are signed with a key shared with tv_menu.py \u2014 deploy.sh writes it to /etc/pitv/control.key and adds the Homebridge user to the 'pitv' group; set controlKey below only if this plugin cannot read that file.",
+  "headerDisplay": "Exposes the Pi's HDMI-CEC TV to HomeKit as a Television accessory (power, input switching, and remote-key navigation of the PiTV menu). Commands use the CONTROL_KEY stored in the private central PiTV state file; deploy.sh grants Homebridge access only to a restricted helper that returns this key, not the rest of the state file.",
   "schema": {
     "type": "object",
     "properties": {
@@ -33,19 +33,6 @@
             }
           }
         }
-      },
-      "controlKeyFile": {
-        "title": "Control key file",
-        "type": "string",
-        "required": false,
-        "placeholder": "/etc/pitv/control.key",
-        "description": "Path to the shared control key. Leave blank to use /etc/pitv/control.key."
-      },
-      "controlKey": {
-        "title": "Control key (paste)",
-        "type": "string",
-        "required": false,
-        "description": "The key itself, from `screen control key show`. Only needed if Homebridge cannot read the key file. Treat it as a password."
       }
     }
   }
