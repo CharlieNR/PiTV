@@ -144,16 +144,28 @@ sudo usermod -aG pitv "$PITV_USER" 2>/dev/null || true
 # Stop the current services before migrating and removing their old live files.
 sudo systemctl stop pitv-menu.service pitv-guest.service pitv-admin.service 2>/dev/null || true
 
-STATE_RESULT="$(sudo -u "$PITV_USER" -H /usr/bin/python3 /opt/pitv/pitv_state.py ensure)"
-case "$STATE_RESULT" in
-    CREATED) echo "Created central state file and imported existing PiTV accounts/settings." ;;
-    EXISTS)  echo "Central state file already exists; left it untouched." ;;
-    *)       echo "ERROR: central state initialisation returned: $STATE_RESULT"; exit 1 ;;
-esac
-echo "Persistent state: $PITV_HOME/.pitv/pitv-state.json"
+STATE_FILE="$PITV_HOME/.pitv/pitv-state.json"
+if sudo -u "$PITV_USER" -H test -f "$STATE_FILE"; then
+    echo "Central state file already exists; deploy.sh will not modify or recreate it."
+else
+    STATE_RESULT="$(sudo -u "$PITV_USER" -H /usr/bin/python3 /opt/pitv/pitv_state.py ensure)"
+    case "$STATE_RESULT" in
+        CREATED) echo "Created central state file and imported existing PiTV accounts/settings." ;;
+        EXISTS)  echo "Central state file was created by another process; left it untouched." ;;
+        *)       echo "ERROR: central state initialisation returned: $STATE_RESULT"; exit 1 ;;
+    esac
+fi
+echo "Persistent state: $STATE_FILE"
 
-# The control key is now stored inside the central state file, so retire the
-# old standalone key only after the central file has been created/confirmed.
+# Retire the old system key only once the central state file contains a control
+# key. If an existing state file is incomplete, fail safely and preserve the old
+# key for recovery rather than silently disconnecting Homebridge.
+if ! sudo -u "$PITV_USER" -H /usr/bin/env PITV_STATE_FILE="$STATE_FILE" \
+    /usr/bin/python3 /opt/pitv/pitv_state.py get-control-key >/dev/null 2>&1; then
+    echo "ERROR: central state file has no readable CONTROL_KEY."
+    echo "Existing control key (if any) has been retained at /etc/pitv/control.key."
+    exit 1
+fi
 sudo rm -f /etc/pitv/control.key
 
 # Homebridge needs the control key to sign local commands, but must not be able
