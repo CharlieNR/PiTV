@@ -304,6 +304,10 @@ case "$CMD" in
                 UPDATE_BRANCH="experimental"
                 ;;
             safe)
+                if [[ $# -ne 2 ]]; then
+                    echo "Usage: screen update [safe]" >&2
+                    exit 1
+                fi
                 UPDATE_BRANCH="main"
                 ;;
             *)
