@@ -274,11 +274,12 @@ live on the Pi, not here.
 `pitv_secrets.py` is the one place that handles them:
 
 - **Emergency code** — lives in `~/.pitv/emergency-code` (0600), read fresh on
-  every check, set with `screen emergency set <6 digits>`. It used to be
-  hardcoded in `tv_menu.py`, `guest-portal.py` and `pin-admin.py`, so the
-  shipped value (`LEGACY_EMERGENCY_CODE`) is **public in git history** — it is
-  kept only to seed the file on upgrade. `screen emergency status` says whether
-  a Pi is still on it, and `tv_menu` logs a warning at boot while it is.
+  every check, set with `screen emergency set <6 digits>`. A fresh install
+  seeds the public fallback `DEFAULT_EMERGENCY_CODE` (`000000`). The older
+  public fallback `159753` is still recognised for existing installations.
+  `screen emergency status` warns while either public fallback is in use, and
+  `tv_menu` logs a warning at boot. Owners should choose a private six-digit
+  code before relying on lockdown.
 - **Portal passwords** — PBKDF2-HMAC-SHA256, per-record salt and iteration
   count (`hash_password` / `verify_password`). Records written by older
   versions (one round of salted SHA-256) still verify and are upgraded in place
