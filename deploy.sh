@@ -166,7 +166,7 @@ PITV_STATE_FILE="$PITV_HOME/.pitv/pitv-state.json" exec /usr/bin/python3 /opt/pi
 EOF
     sudo chown root:root /usr/local/bin/pitv-read-control-key
     sudo chmod 755 /usr/local/bin/pitv-read-control-key
-    printf '%s ALL=(root) NOPASSWD: /usr/local/bin/pitv-read-control-key\n' "$HB_USER" \
+    printf '%s ALL=(root) NOPASSWD: /usr/local/bin/pitv-read-control-key ""\n' "$HB_USER" \
         | sudo tee /etc/sudoers.d/pitv-control-key >/dev/null
     sudo chown root:root /etc/sudoers.d/pitv-control-key
     sudo chmod 440 /etc/sudoers.d/pitv-control-key
