@@ -115,7 +115,7 @@ screen guest remove <name>
 
 When an external PiTV game is running, the guest and admin pages offer **Use phone keyboard**. Open it and claim access to type text into the game from your phone. Only one signed-in browser session can hold this access at once; competing sessions and other remote/game-controller input are blocked while it is held. Press **Done — release access** when finished. The lease also expires after 90 seconds without typing, and it is cleared when the game ends.
 
-This is intended for games that accept console text input. It is not a way to type into the guest/admin sign-in forms, and it does not trigger Apple's native Control Centre Remote keyboard.
+This is intended for games that accept console text input. It is not a way to type into the guest/admin sign-in forms, and it does not trigger Apple's native Control Centre Remote keyboard. The on-TV PIN keypad can still be navigated with the Apple Remote's arrows, Select and Back controls.
 
 ### Set a personal emergency code
 
