@@ -249,6 +249,18 @@ def get_control_key_for_helper() -> int:
     return 0
 
 
+def check_emergency_status() -> int:
+    """Read-only deployment check: nonzero when the PIN is missing/default."""
+    try:
+        state = read_state()
+        code = state.get("EMERGENCY_PIN") if isinstance(state, dict) else None
+    except Exception:
+        return 1
+    if not isinstance(code, str) or not code.isdigit() or len(code) != 6:
+        return 1
+    return 1 if code in {"000000", "159753"} else 0
+
+
 def main() -> int:
     import sys
 
@@ -259,7 +271,10 @@ def main() -> int:
         return 0
     if command == "get-control-key":
         return get_control_key_for_helper()
-    print("Usage: pitv_state.py ensure|get-control-key", file=__import__("sys").stderr)
+    if command == "check-emergency-status":
+        return check_emergency_status()
+    print("Usage: pitv_state.py ensure|get-control-key|check-emergency-status",
+          file=__import__("sys").stderr)
     return 2
 
 
