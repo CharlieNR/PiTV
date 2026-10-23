@@ -580,22 +580,40 @@ def listen_fifo():
                             log("UNLOCK rejected")
                         continue
 
-                    # Fixed special keys from the exclusive phone-keyboard
-                    # lease. Unlike ordinary remote keys, these must reach the
-                    # active game while a browser owns keyboard input.
+                    # The web keyboard includes its unguessable lease token on
+                    # every command. Only the current lease holder's input may
+                    # be injected, so SSH remote typing cannot compete for input.
+                    if raw[:8].upper() == "WEBTYPE ":
+                        parts = raw.split(" ", 2)
+                        if (controller_mode == "GAME_EXTERNAL" and len(parts) == 3
+                                and _web_keyboard_token_valid(parts[1])):
+                            for ch in parts[2]:
+                                _inject_char(ch)
+                        continue
+
+                    if raw[:12].upper() == "WEBTYPE_KEY ":
+                        parts = raw.split()
+                        if (controller_mode == "GAME_EXTERNAL" and len(parts) == 3
+                                and _web_keyboard_token_valid(parts[1])):
+                            key = parts[2].upper()
+                            if key in ("ENTER", "SPACE", "TAB", "ESC", "BKSP"):
+                                _remote_inject(key)
+                        continue
+
+                    # Non-browser typing still works normally when no browser
+                    # owns the keyboard, but it cannot bypass an active lease.
+                    # Never log text itself because it may be private.
                     if raw[:9].upper() == "TYPE_KEY ":
-                        if controller_mode == "GAME_EXTERNAL":
+                        if (controller_mode == "GAME_EXTERNAL"
+                                and not _web_keyboard_claim_active()):
                             key = raw[9:].strip().upper()
                             if key in ("ENTER", "SPACE", "TAB", "ESC", "BKSP"):
                                 _remote_inject(key)
                         continue
 
-                    # `screen remote` / phone web keyboard raw typing: "TYPE x"
-                    # sends literal characters into a running external game.
-                    # Ignored unless an external game is on screen, and never
-                    # logged because typed content may be private.
                     if raw[:5].upper() == "TYPE " and len(raw) > 5:
-                        if controller_mode == "GAME_EXTERNAL":
+                        if (controller_mode == "GAME_EXTERNAL"
+                                and not _web_keyboard_claim_active()):
                             for ch in raw[5:]:
                                 _inject_char(ch)
                         continue
@@ -613,7 +631,8 @@ def listen_fifo():
                         # Sky box if that's what's on screen, else the menu.
                         route_remote_key(cmd)
                     elif (controller_mode == "GAME_EXTERNAL" and cmd in
-                          ("SPACE", "TAB", "ESC", "BKSP")):
+                          ("SPACE", "TAB", "ESC", "BKSP")
+                          and not _web_keyboard_claim_active()):
                         _remote_inject(cmd)
                     elif cmd.startswith("RUN "):
                         parts   = raw.split(" ", 3)
@@ -855,6 +874,20 @@ def _web_keyboard_claim_active() -> bool:
         with open(path, "r", encoding="utf-8") as f:
             lease = json.load(f)
         return float(lease.get("expires_at", 0)) > time.time()
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _web_keyboard_token_valid(token: str) -> bool:
+    """Validate a browser's per-lease token before injecting its text."""
+    if not token or not _web_keyboard_claim_active():
+        return False
+    path = os.path.join(os.path.expanduser("~/.pitv"), "remote-keyboard-lease.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lease = json.load(f)
+        return (float(lease.get("expires_at", 0)) > time.time()
+                and hmac.compare_digest(str(lease.get("token", "")), token))
     except (OSError, ValueError, TypeError, AttributeError):
         return False
 
