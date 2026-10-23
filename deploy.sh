@@ -113,12 +113,12 @@ if [ -f screen ]; then
     sudo chmod +x /usr/local/bin/screen
 fi
 
-# ── Shared control key ────────────────────────────────────────────────
-# tv_menu.py only accepts SIGNED commands on its UDP channel. Homebridge runs
-# as a different user, so the key lives in /etc/pitv/control.key, readable by
-# the 'pitv' group, with both users in it.
-# Resolve the interactive installer account instead of assuming a particular
-# username. This works both with "sudo ./deploy.sh" and direct invocation.
+# ── Central persistent state ─────────────────────────────────────────
+# All durable PiTV application data lives in ~/.pitv/pitv-state.json:
+# EMERGENCY_PIN, CONTROL_KEY, portal secrets, guest/admin accounts, player
+# PINs, pairing state, Sky/network settings and persistent lockout state.
+# ensure_state imports older split files only when the central file is absent;
+# if it already exists, it is left untouched.
 PITV_USER="${SUDO_USER:-$(id -un)}"
 if ! id "$PITV_USER" >/dev/null 2>&1; then
     echo "ERROR: install user '$PITV_USER' does not exist."
@@ -138,21 +138,46 @@ HB_USER="$(sed -n 's/^User=//p' /etc/systemd/system/homebridge.service \
 
 sudo mkdir -p /etc/pitv
 getent group pitv >/dev/null || sudo groupadd pitv
-if [ ! -s /etc/pitv/control.key ]; then
-    echo "Creating the shared control key (/etc/pitv/control.key)..."
-    python3 -c "import secrets; print(secrets.token_hex(32))" \
-        | sudo tee /etc/pitv/control.key >/dev/null
-fi
-sudo chgrp pitv /etc/pitv/control.key
-sudo chmod 640 /etc/pitv/control.key
+# Preserve access to the old group-readable key for the one-time migration.
 sudo usermod -aG pitv "$PITV_USER" 2>/dev/null || true
-if [ -n "$HB_USER" ]; then
-    sudo usermod -aG pitv "$HB_USER" 2>/dev/null || true
-    echo "Control key shared with Homebridge user '$HB_USER'."
+
+# Stop the current services before migrating and removing their old live files.
+sudo systemctl stop pitv-menu.service pitv-guest.service pitv-admin.service 2>/dev/null || true
+
+STATE_RESULT="$(sudo -u "$PITV_USER" -H /usr/bin/python3 /opt/pitv/pitv_state.py ensure)"
+case "$STATE_RESULT" in
+    CREATED) echo "Created central state file and imported existing PiTV accounts/settings." ;;
+    EXISTS)  echo "Central state file already exists; left it untouched." ;;
+    *)       echo "ERROR: central state initialisation returned: $STATE_RESULT"; exit 1 ;;
+esac
+echo "Persistent state: $PITV_HOME/.pitv/pitv-state.json"
+
+# The control key is now stored inside the central state file, so retire the
+# old standalone key only after the central file has been created/confirmed.
+sudo rm -f /etc/pitv/control.key
+
+# Homebridge needs the control key to sign local commands, but must not be able
+# to read password hashes, account tokens or other private state. Give it one
+# root-owned, argument-free helper which returns only CONTROL_KEY.
+if [ -n "$HB_USER" ] && id "$HB_USER" >/dev/null 2>&1; then
+    sudo tee /usr/local/bin/pitv-read-control-key >/dev/null <<EOF
+#!/bin/sh
+PITV_STATE_FILE="$PITV_HOME/.pitv/pitv-state.json" exec /usr/bin/python3 /opt/pitv/pitv_state.py get-control-key
+EOF
+    sudo chown root:root /usr/local/bin/pitv-read-control-key
+    sudo chmod 755 /usr/local/bin/pitv-read-control-key
+    printf '%s ALL=(root) NOPASSWD: /usr/local/bin/pitv-read-control-key\n' "$HB_USER" \
+        | sudo tee /etc/sudoers.d/pitv-control-key >/dev/null
+    sudo chown root:root /etc/sudoers.d/pitv-control-key
+    sudo chmod 440 /etc/sudoers.d/pitv-control-key
+    sudo visudo -cf /etc/sudoers.d/pitv-control-key >/dev/null
+    echo "Installed restricted control-key access for Homebridge user '$HB_USER'."
+    if command -v hb-service >/dev/null 2>&1; then
+        sudo hb-service restart 2>/dev/null || true
+    fi
 else
-    echo "Could not find the Homebridge user — if the Home app's TV tile stops"
-    echo "responding, paste the key from 'screen control key show' into the"
-    echo "PiTV plugin's config (controlKey), or add its user to the 'pitv' group."
+    echo "WARNING: Homebridge user was not found. The TV tile will need a configured controlKey"
+    echo "or a later deploy after Homebridge is installed."
 fi
 
 # Reload systemd services
