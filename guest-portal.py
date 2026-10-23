@@ -719,7 +719,7 @@ def controls_body(username):
   <button onclick="act('right')">&#9654;</button>
   <button onclick="act('back')">Back</button><button onclick="act('down')">&#9660;</button>
   <span class="sp"></span></div></div>
-<div class=card><p class=muted>Type into a running PiTV game</p>
+<div class=card id=keyboardCard hidden><p class=muted>Type into a running PiTV game</p>
   <p class=muted>Use your phone's keyboard. Only one signed-in browser can type at a time.</p>
   <button onclick="openKeyboard()">Use phone keyboard</button></div>
 <p class=muted><a href="/logout">Sign out</a></p>
@@ -891,6 +891,8 @@ function apply(s){
   if(lk) lk.textContent = s.locked ? 'LOCKED' : 'unlocked';
   var kb = document.getElementById('keyboardbar');
   if(kb) kb.hidden = !(s.keyboard_busy && !s.keyboard_mine);
+  var kbCard = document.getElementById('keyboardCard');
+  if(kbCard) kbCard.hidden = !s.keyboard_game_available;
   renderKeyboardModal();
 }
 function sync(){
@@ -1252,15 +1254,13 @@ class Handler(BaseHTTPRequestHandler):
                                     "error": "text_must_be_printable_ascii_under_121_chars"},
                                    code=400)
                         return
-                    fifo_command = "TYPE " + text_value
+                    fifo_command = "WEBTYPE " + token + " " + text_value
                 else:
-                    special = {"SPACE": "SPACE", "ENTER": "TYPE_KEY ENTER",
-                               "BKSP": "TYPE_KEY BKSP", "TAB": "TYPE_KEY TAB",
-                               "ESC": "TYPE_KEY ESC"}
+                    special = {"SPACE", "ENTER", "BKSP", "TAB", "ESC"}
                     if key_value not in special:
                         self._json({"ok": False, "error": "unsupported_key"}, code=400)
                         return
-                    fifo_command = special[key_value]
+                    fifo_command = "WEBTYPE_KEY " + token + " " + key_value
 
                 with _keyboard_lease_guard():
                     lease = _read_keyboard_lease_locked()
