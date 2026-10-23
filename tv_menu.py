@@ -1,4 +1,5 @@
 import curses
+import fcntl
 import html
 import hmac
 import json
@@ -843,6 +844,12 @@ REMOTE_MENU_NAV = {"UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "SPEED"}
 
 def _web_keyboard_claim_active() -> bool:
     """Whether a browser currently owns exclusive input for an external game."""
+    try:
+        with open(GAME_STATE_FILE, "r", encoding="ascii") as f:
+            if f.read().strip() != "on":
+                return False
+    except OSError:
+        return False
     path = os.path.join(os.path.expanduser("~/.pitv"), "remote-keyboard-lease.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -850,6 +857,30 @@ def _web_keyboard_claim_active() -> bool:
         return float(lease.get("expires_at", 0)) > time.time()
     except (OSError, ValueError, TypeError, AttributeError):
         return False
+
+
+def _clear_web_keyboard_lease() -> None:
+    """Release browser keyboard ownership atomically when an external game ends."""
+    state_dir = os.path.expanduser("~/.pitv")
+    lock_path = os.path.join(state_dir, "remote-keyboard-lease.lock")
+    lease_path = os.path.join(state_dir, "remote-keyboard-lease.json")
+    try:
+        os.makedirs(state_dir, mode=0o700, exist_ok=True)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                os.unlink(lease_path)
+            except FileNotFoundError:
+                pass
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+    except OSError as e:
+        log(f"Could not clear phone keyboard lease after game: {e}")
 
 
 def route_remote_key(tok: str) -> None:
@@ -1650,6 +1681,7 @@ def run_game(stdscr, cmd_list: list):
     finally:
         controller_mode = "MENU"
         _set_external_game_state(False)
+        _clear_web_keyboard_lease()
         _current_game   = None
         for f in (mapper_log, game_log):
             if f:
