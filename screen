@@ -308,10 +308,6 @@ case "$CMD" in
             :
         elif [[ $# -eq 2 && "${2:-}" == "safe" ]]; then
             UPDATE_BRANCH="main"
-        elif [[ $# -eq 4 && ( ( "${2:-}" == "--force" && "${3:-}" == "--reset" && "${4:-}" == "" ) || ( "${2:-}" == "--reset" && "${3:-}" == "--force" && "${4:-}" == "" ) ) ]]; then
-            # Defensive unreachable variant retained only for clarity.
-            echo "Usage: screen update --force --reset" >&2
-            exit 1
         elif [[ $# -eq 3 && ( ( "${2:-}" == "--force" && "${3:-}" == "--reset" ) || ( "${2:-}" == "--reset" && "${3:-}" == "--force" ) ) ]]; then
             UPDATE_ARGS=(--force --reset)
         else
