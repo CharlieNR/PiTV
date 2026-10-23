@@ -99,6 +99,16 @@ if command -v gst-inspect-1.0 >/dev/null 2>&1; then
     fi
 fi
 
+# QR display for the built-in Imposter game; the game has a URL fallback if
+# qrencode cannot be installed (for example, while offline).
+if ! command -v qrencode >/dev/null 2>&1; then
+    if sudo apt-get install -y qrencode >/dev/null; then
+        echo "Installed qrencode for Imposter phone joining."
+    else
+        echo "Warning: qrencode could not be installed; Imposter will show the join URL instead."
+    fi
+fi
+
 # Make sure all scripts are executable
 chmod +x *.sh *.py 2>/dev/null || true
 

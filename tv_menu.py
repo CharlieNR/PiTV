@@ -15,6 +15,7 @@ import time
 
 import pitv_secrets
 import pitv_state
+import pitv_imposter
 
 # ─────────────────────────────────────────────────────────────────────
 # OPTIONAL DEPENDENCIES
@@ -28,7 +29,7 @@ except ImportError:
     EVDEV_OK = False
 
 # ChronosVer: vYYYY.MAJOR.MINOR.BUG
-VERSION = "v2026.2.3.15"
+VERSION = "v2026.2.3.16"
 
 # ─────────────────────────────────────────────────────────────────────
 # LOG SYSTEM
@@ -157,6 +158,12 @@ pending_game_key = ""
 pending_game_cmd: list = []
 pending_game_2p  = False    # the pending game is 2-player → collect two PINs
 
+imposter_count_options: list[int] = []
+imposter_count_selected = 0
+imposter_target_count = 0
+imposter_pin_stage = 1
+imposter_players: list[str] = []
+
 # Tic-Tac-Toe mode selection
 ttt_sel   = 0          # 0 = 1 player, 1 = 2 player
 ttt_mode  = "2P"       # "1P" (vs computer) or "2P"
@@ -232,28 +239,25 @@ GAME_KEYS = {
 
 # (label, cmd_list, game_key, is_2player)
 GAME_OPTIONS = [
-    # ── arcade / action ──
-    ("SNAKE",             ["snake"],          "SNAKE",        False),  # built-in
-    ("TETRIS",            ["vitetris"],       "TETRIS",       True),
-    ("SPACE INVADERS",    ["ninvaders"],      "INVADERS",     False),
-    ("BREAKOUT",          ["lbreakouthd"],    "BREAKOUT",     False),
-    ("SPACE SHOOTER",     ["chromium-bsu"],   "SHOOTER",      False),
-    ("TYRIAN",            ["opentyrian"],     "TYRIAN",       False),
-    ("MOON BUGGY",        ["moon-buggy"],     "MOONBUGGY",    False),
-    ("SUPER TUX",         ["supertux2"],      "SUPERTUX",     False),
-    ("BOULDER DASH",      ["phear"],          "BOULDERDASH",  False),
-    # ── puzzle / strategy ──
+    # Imposter is first for testing; all other games are alphabetical.
+    ("IMPOSTER",          ["imposter"],       "IMPOSTER",     False),
     ("2048",              ["2048"],           "2048",         False),
-    ("SUDOKU",            ["nudoku"],         "SUDOKU",       False),
-    ("MINESWEEPER",       ["freesweep"],      "MINESWEEPER",  False),
+    ("BOULDER DASH",      ["phear"],          "BOULDERDASH",  False),
+    ("BREAKOUT",          ["lbreakouthd"],    "BREAKOUT",     False),
     ("CURSE OF WAR",      ["curseofwar"],     "CURSEOFWAR",   False),
-    ("NOUGHTS & CROSSES", ["noughts"],        "TICTACTOE",    True),   # built-in
-    # ── adventure / RPG (keyboard recommended) ──
-    ("NETHACK",           ["nethack"],        "NETHACK",      False),
-    ("DUNGEON CRAWL",     ["crawl"],          "CRAWL",        False),
     ("DOPE WARS",         ["dopewars"],       "DOPEWARS",     False),
+    ("DUNGEON CRAWL",     ["crawl"],          "CRAWL",        False),
+    ("MINESWEEPER",       ["freesweep"],      "MINESWEEPER",  False),
+    ("MOON BUGGY",        ["moon-buggy"],     "MOONBUGGY",    False),
+    ("NETHACK",           ["nethack"],        "NETHACK",      False),
+    ("NOUGHTS & CROSSES", ["noughts"],        "TICTACTOE",    True),
+    ("SNAKE",             ["snake"],          "SNAKE",        False),
+    ("SPACE INVADERS",    ["ninvaders"],      "INVADERS",     False),
+    ("SPACE SHOOTER",     ["chromium-bsu"],   "SHOOTER",      False),
+    ("SUPER TUX",         ["supertux2"],      "SUPERTUX",     False),
+    ("TETRIS",            ["vitetris"],       "TETRIS",       True),
+    ("TYRIAN",            ["opentyrian"],     "TYRIAN",       False),
 ]
-
 # Debian's bsdgames/bastet/etc packages install into /usr/games, but the
 # systemd service's default PATH (/usr/local/bin:/usr/bin:/bin) doesn't
 # include it — shutil.which() alone will report every game as missing.
@@ -1042,7 +1046,8 @@ def _publish_pin_entry_state() -> None:
             (pending_game_key == "TICTACTOE" and ttt_mode == "2P")
             or (pending_game_key != "TICTACTOE" and pending_game_2p)
         )
-        player = ttt_stage if two_player else 0
+        player = (imposter_pin_stage if pending_game_key == "IMPOSTER"
+                  else ttt_stage if two_player else 0)
         signature = (pending_game_key, player)
         if signature != _pin_prompt_signature:
             _clear_web_pin_lease()
@@ -1081,6 +1086,189 @@ def _publish_pin_entry_state() -> None:
         _pin_state_last = payload
     except OSError as e:
         log(f"Could not publish phone PIN state: {e}")
+
+
+
+def _imposter_local_ip() -> str:
+    try:
+        r=subprocess.run(["ip","-o","-4","route","get","1.1.1.1"],capture_output=True,text=True,timeout=2,check=False)
+        m=re.search(r"\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})",r.stdout)
+        if m and not m.group(1).startswith("127."): return m.group(1)
+    except Exception: pass
+    try:
+        r=subprocess.run(["hostname","-I"],capture_output=True,text=True,timeout=2,check=False)
+        for ip in r.stdout.split():
+            if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}",ip) and not ip.startswith("127."): return ip
+    except Exception: pass
+    return "pitv.local"
+
+
+def _imposter_qr_matrix(url):
+    try:
+        r=subprocess.run(["qrencode","-t","ASCII","-m","4",url],capture_output=True,text=True,timeout=2,check=False)
+        if r.returncode: return None
+        lines=r.stdout.splitlines()
+        if not lines: return None
+        width=max(map(len,lines))
+        if width<10: return None
+        if width%2: width+=1
+        rows=[[line.ljust(width)[i:i+2]=="##" for i in range(0,width,2)] for line in lines]
+        cols=max(map(len,rows))
+        return [row+[False]*(cols-len(row)) for row in rows]
+    except (OSError,subprocess.SubprocessError): return None
+
+
+def _imposter_center(stdscr,y,text,attr=0):
+    h,w=stdscr.getmaxyx()
+    if y<0 or y>=h: return
+    text=str(text)
+    if len(text)>w-2: text=text[:max(0,w-5)]+"…"
+    try: stdscr.addstr(y,max(0,(w-len(text))//2),text,attr)
+    except curses.error: pass
+
+
+def _imposter_draw_join(stdscr,matrix,url,joined,total):
+    h,w=stdscr.getmaxyx()
+    stdscr.erase()
+    _imposter_center(stdscr,0,"IMPOSTER — SCAN TO JOIN",curses.color_pair(5)|curses.A_BOLD)
+    _imposter_center(stdscr,1,"Each player scans and enters their own PIN",curses.color_pair(3)|curses.A_DIM)
+    if not matrix:
+        _imposter_center(stdscr,5,"QR unavailable — open this address:")
+        _imposter_center(stdscr,7,url,curses.A_BOLD)
+        _imposter_center(stdscr,10,f"Players connected: {joined}/{total}",curses.color_pair(2)|curses.A_BOLD)
+        stdscr.refresh();return
+    rows,cols=len(matrix),max(map(len,matrix))
+    top,left=2,max(0,(w-cols)//2)
+    half=(rows+1)//2
+    if cols>w-2 or top+half+3>h:
+        _imposter_center(stdscr,5,"QR does not fit this terminal; open:")
+        _imposter_center(stdscr,7,url,curses.A_BOLD);stdscr.refresh();return
+    for y in range(0,rows,2):
+        for x in range(cols):
+            a=bool(matrix[y][x]);b=bool(matrix[y+1][x]) if y+1<rows else False
+            ch,attr=(" ",curses.color_pair(7)) if a and b else (" ",curses.color_pair(6)) if not a and not b else ("▀",curses.color_pair(6)) if a else ("▄",curses.color_pair(6))
+            try: stdscr.addstr(top+y//2,left+x,ch,attr)
+            except curses.error: pass
+    y=top+half
+    _imposter_center(stdscr,y,f"Players connected: {joined}/{total}",curses.color_pair(2)|curses.A_BOLD)
+    _imposter_center(stdscr,y+1,"Scan with your phone camera; enter your PIN again.",curses.color_pair(3)|curses.A_DIM)
+    _imposter_center(stdscr,y+2,url,curses.A_DIM)
+    stdscr.refresh()
+
+
+def _imposter_draw_lines(stdscr,title,lines):
+    h,w=stdscr.getmaxyx()
+    stdscr.erase();_imposter_center(stdscr,1,title,curses.color_pair(5)|curses.A_BOLD)
+    y=max(3,(h-len(lines))//2)
+    for i,item in enumerate(lines[:h-4]):
+        text,attr=item if isinstance(item,tuple) else (item,curses.color_pair(3))
+        _imposter_center(stdscr,y+i,text,attr)
+    _imposter_center(stdscr,h-1,"Back: end game",curses.color_pair(3)|curses.A_DIM)
+    stdscr.refresh()
+
+
+def _imposter_draw_results(stdscr,results,progress):
+    h,w=stdscr.getmaxyx()
+    stdscr.erase();_imposter_center(stdscr,0,"VOTE RESULTS",curses.color_pair(5)|curses.A_BOLD)
+    ordered=list(results or [])
+    max_count=max((int(x.get("count",0)) for x in ordered),default=1)
+    max_bar=max(1,min(22,w//3)); y=2
+    for item in ordered:
+        if y>=h-5:break
+        name,count=str(item.get("name",""))[:12],max(0,int(item.get("count",0)))
+        n=min(max_bar,int(round(max_bar*count/max(1,max_count)*min(1.0,max(0.0,progress)))))
+        try:
+            stdscr.addstr(y,1,f"{name:<12}"[:w-2],curses.color_pair(3))
+            bx=min(w-2,14)
+            if n:stdscr.addstr(y,bx,"█"*min(n,w-bx-2),curses.color_pair(2)|curses.A_BOLD)
+            label=f" {count} vote{'s' if count!=1 else ''}"
+            cx=max(0,min(w-len(label)-1,bx+n+1));stdscr.addstr(y,cx,label,curses.color_pair(4))
+        except curses.error:pass
+        y+=1
+    top3=sorted(ordered,key=lambda x:(-int(x.get("count",0)),str(x.get("name","")).casefold()))[:3]
+    if top3 and h>=13:
+        base=h-3;centres=[w//2-15,w//2,w//2+15]
+        for i,item in enumerate(reversed(top3)):
+            x=max(0,min(w-12,centres[i]-5));height=int((i+2)*min(1.0,max(0.0,progress)))
+            try:
+                for j in range(height):
+                    yy=base-1-j
+                    if yy>=0:stdscr.addstr(yy,x,"████",curses.color_pair(7))
+                name=str(item.get("name",""))[:10]
+                stdscr.addstr(base,x,name.center(min(12,w-x-1))[:w-x-1],curses.color_pair(5)|curses.A_BOLD)
+            except curses.error:pass
+    _imposter_center(stdscr,h-1,"Actual imposter revealed in 5 seconds",curses.color_pair(3)|curses.A_DIM)
+    stdscr.refresh()
+
+
+def run_imposter(stdscr,players: list[str]) -> None:
+    global controller_mode
+    game_id=secrets.token_urlsafe(9)
+    url=f"http://{_imposter_local_ip()}:8080/imposter/join?g={game_id}"
+    try:pitv_imposter.create_game(game_id,players,url)
+    except ValueError as e:
+        show_message(stdscr,["IMPOSTER",str(e)],color_pair=1,duration=3.0);return
+    matrix=_imposter_qr_matrix(url)
+    prior=controller_mode;controller_mode="GAME_INTERNAL";input_queue.clear()
+    choice=0;drawn=None;last_draw=0.0;results_started=None
+    log(f"Imposter started with {len(players)} players")
+    try:
+        while True:
+            now=time.time();pitv_imposter.advance_deadlines(game_id,now)
+            state=pitv_imposter.read_state()
+            if state.get("game_id")!=game_id or state.get("phase")=="ended":break
+            phase=str(state.get("phase","join"))
+            if phase=="results" and results_started is None:results_started=now
+            if phase!="results":results_started=None
+            while input_queue:
+                cmd=input_queue.pop(0)
+                if isinstance(cmd,tuple):continue
+                if cmd in ("BACK","HOME"):
+                    pitv_imposter.end_game(game_id);return
+                if phase=="round" and cmd in ("SELECT","RIGHT"):pitv_imposter.advance_turn(game_id)
+                elif phase=="round_complete":
+                    if cmd in ("UP","DOWN","LEFT","RIGHT"):choice=1-choice
+                    elif cmd=="SELECT":
+                        if choice==0:pitv_imposter.next_round(game_id);choice=0
+                        else:pitv_imposter.start_vote(game_id)
+                elif phase=="revealed" and cmd=="SELECT":
+                    pitv_imposter.next_round(game_id);choice=0
+            pitv_imposter.advance_deadlines(game_id)
+            state=pitv_imposter.read_state();phase=str(state.get("phase","join"));now=time.time()
+            due=now-last_draw >= (0.30 if phase in ("vote","results") else 0.45)
+            sig=(phase,state.get("joined_count"),state.get("round_number"),state.get("turn_index"),choice,
+                 tuple((x.get("name"),x.get("count")) for x in state.get("results",[])))
+            if due and (sig!=drawn or phase in ("vote","results")):
+                if phase=="join":
+                    _imposter_draw_join(stdscr,matrix,url,sum(1 for p in state["players"] if p.get("joined")),len(players))
+                elif phase=="choose_word":
+                    _imposter_draw_lines(stdscr,"IMPOSTER",["All players are connected.","The word is being chosen on a phone.","The imposter does not receive the word.","Waiting for the word chooser to press Enter."])
+                elif phase=="round":
+                    names=[p["name"] for p in state.get("players",[])];idx=int(state.get("turn_index",0) or 0)
+                    who=names[idx] if 0<=idx<len(names) else "?"
+                    _imposter_draw_lines(stdscr,"IMPOSTER — ROUND "+str(state.get("round_number",1)),
+                        [("NOW IT IS",curses.color_pair(3)),(who.upper()+"'S GO",curses.color_pair(2)|curses.A_BOLD),
+                         "Give a clue without saying the exact word.","Press SELECT for the next player."])
+                elif phase=="round_complete":
+                    _imposter_draw_lines(stdscr,"ROUND COMPLETE",["Everyone has had a turn.",
+                        ("GO ROUND AGAIN",curses.color_pair(2)|curses.A_BOLD|(curses.A_REVERSE if choice==0 else 0)),
+                        ("VOTE",curses.color_pair(5)|curses.A_BOLD|(curses.A_REVERSE if choice==1 else 0)),
+                        "Use Up/Down to choose, then Select."])
+                elif phase=="vote":
+                    rem=max(0,int(float(state.get("vote_ends_at",now))-now+0.999))
+                    _imposter_draw_lines(stdscr,"VOTE NOW",["Choose who you think the imposter is on your phone.",f"{rem} seconds remaining.","Votes can be changed until time runs out."])
+                elif phase=="results":
+                    _imposter_draw_results(stdscr,state.get("results",[]),min(1.0,(now-(results_started or now))/2.4))
+                elif phase=="revealed":
+                    lines=[f"{x.get('name')}: {x.get('count')} vote(s)" for x in state.get("results",[])]
+                    lines += ["",("THE IMPOSTER WAS: "+str(state.get("imposter","?")).upper(),curses.color_pair(1)|curses.A_BOLD),
+                              ("THE WORD WAS: "+str(state.get("word","")),curses.color_pair(2)|curses.A_BOLD),
+                              "Select: another round  |  Back: exit"]
+                    _imposter_draw_lines(stdscr,"REVEAL",lines)
+                drawn=sig;last_draw=time.time()
+            time.sleep(0.08)
+    finally:
+        pitv_imposter.end_game(game_id);input_queue.clear();controller_mode=prior
 
 
 def route_remote_key(tok: str) -> None:
@@ -2678,7 +2866,7 @@ def draw_games_menu(stdscr, sel):
         tags = (["FREE"] if key in FREE_GAMES else ["LOCK"])
         if is2p: tags.append("2P")
         # SNAKE is built-in (no external binary), so it's never "N/A".
-        if key not in ("SNAKE", "TICTACTOE") and not resolve_binary(GAME_KEYS.get(key, [key])[0]):
+        if key not in ("SNAKE", "TICTACTOE", "IMPOSTER") and not resolve_binary(GAME_KEYS.get(key, [key])[0]):
             tags.append("N/A")
         return "  [" + "/".join(tags) + "]"
 
@@ -2688,6 +2876,15 @@ def draw_games_menu(stdscr, sel):
         title    = "GAMES LIBRARY",
         subtitle = "  A/Right=select   B/Left=back   [N/A]=install it (see below)",
         color    = curses.color_pair(5),
+    )
+
+
+def draw_imposter_count(stdscr, sel, options):
+    _draw_card_list(
+        stdscr, [f"{n} PLAYERS" for n in options], sel,
+        title="IMPOSTER — NUMBER OF PLAYERS",
+        subtitle="Each player needs a unique, assigned six-digit PIN.",
+        color=curses.color_pair(5),
     )
 
 
@@ -2838,8 +3035,69 @@ def keypad_press(key: str, target: str) -> tuple[str, bool]:
 # MAIN ENGINE
 # ─────────────────────────────────────────────────────────────────────
 
+
+def _handle_entered_game_pin(stdscr, entered: str) -> None:
+    global current_view, keypad_entered, keypad_error, keypad_row, keypad_col
+    global otp_fail_count, system_locked
+    global ttt_stage, ttt_p1, imposter_pin_stage, imposter_players, imposter_target_count
+
+    who=verify_pin(entered)
+    if pending_game_key=="IMPOSTER":
+        if who=="Emergency":
+            keypad_error,keypad_entered="EMERGENCY PIN CANNOT JOIN",""
+            return
+        if who and who in imposter_players:
+            keypad_error,keypad_entered="PIN ALREADY USED",""
+            return
+        if who:
+            imposter_players.append(who);otp_fail_count=0
+            if len(imposter_players)<imposter_target_count:
+                imposter_pin_stage+=1;keypad_entered=keypad_error=""
+                keypad_row=keypad_col=0
+                _publish_pin_entry_state()
+                log(f"Imposter setup: accepted PIN for player {imposter_pin_stage-1}")
+                return
+            current_view="GAMES_MENU";_publish_pin_entry_state()
+            run_imposter(stdscr,list(imposter_players))
+            current_view="GAMES_MENU"
+            return
+    if who:
+        otp_fail_count=0
+        two_player=((pending_game_key=="TICTACTOE" and ttt_mode=="2P")
+                    or (pending_game_key!="TICTACTOE" and pending_game_2p))
+        if two_player and ttt_stage==1:
+            ttt_p1,ttt_stage=who,2
+            keypad_entered=keypad_error=""
+            _publish_pin_entry_state()
+            log(f"{pending_game_key} P1: {who}")
+            show_message(stdscr,["",f"Welcome {who}!","Player 2 — enter your PIN"],color_pair=2,duration=1.5)
+            return
+        log(f"{pending_game_key} unlocked by {who}")
+        if pending_game_cmd:set_highscore_name(pending_game_cmd[0],who)
+        current_view="GAMES_MENU";_publish_pin_entry_state()
+        if two_player:
+            log(f"{pending_game_key} 2P: {ttt_p1} vs {who}")
+            show_message(stdscr,["",f"{ttt_p1} & {who} — go!"],color_pair=2,duration=1.5)
+        else:show_message(stdscr,["",f"Welcome {who}!"],color_pair=2,duration=1.5)
+        if pending_game_key=="SNAKE":run_snake(stdscr)
+        elif pending_game_key=="TICTACTOE":run_noughts(stdscr,vs_computer=(ttt_mode=="1P"))
+        else:run_game(stdscr,pending_game_cmd)
+        current_view="GAMES_MENU"
+        return
+    otp_fail_count+=1
+    remaining=OTP_MAX_FAILS-otp_fail_count
+    if otp_fail_count>=OTP_MAX_FAILS:
+        log("Max failures — system locked")
+        system_locked=True;_save_lock_state();current_view="LOCKED"
+    else:
+        keypad_error=f"WRONG PIN — {remaining} attempt(s) left"
+        keypad_entered=""
+
+
 def main(stdscr):
     global current_view, selected_art_idx, selected_game_idx, selected_dur_idx
+    global imposter_count_options, imposter_count_selected, imposter_target_count
+    global imposter_pin_stage, imposter_players
     global active_art_type, art_stop_time, should_clear_screen
     global keypad_row, keypad_col, keypad_entered, keypad_error
     global lock_entered, lock_error
@@ -2859,6 +3117,11 @@ def main(stdscr):
     curses.init_pair(3, curses.COLOR_CYAN,    curses.COLOR_BLACK)
     curses.init_pair(4, curses.COLOR_WHITE,   curses.COLOR_BLACK)
     curses.init_pair(5, curses.COLOR_MAGENTA, curses.COLOR_BLACK)
+    try:
+        curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_WHITE)
+        curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_BLACK)
+    except curses.error:
+        pass
 
     frame       = 0
     last_view   = None
@@ -2966,27 +3229,12 @@ def main(stdscr):
                 # All other commands (HOME, CLEAR, etc.) are ignored while locked
                 continue
 
-            # A phone keypad claimant owns all input until it releases the
-            # lease or the TV advances to the next PIN prompt.
+            # A valid phone PIN press passes through unchanged to the keypad handler,
+            # which updates the entered buffer without moving the TV highlight.
             if isinstance(cmd, tuple) and cmd and cmd[0] == "WEB_PIN":
                 if (current_view != "KEYPAD"
                         or not _web_pin_token_valid(cmd[1], cmd[2])):
                     continue
-                pin_key = str(cmd[3]).upper()
-                if len(pin_key) == 1 and pin_key in "0123456789":
-                    coords = next(((ri, row.index(pin_key))
-                                   for ri, row in enumerate(KEYPAD_LAYOUT)
-                                   if pin_key in row), None)
-                elif pin_key == "DEL":
-                    coords = (3, 0)
-                elif pin_key == "OK":
-                    coords = (3, 2)
-                else:
-                    coords = None
-                if coords is None:
-                    continue
-                keypad_row, keypad_col = coords
-                cmd = "SELECT"
             elif _web_pin_claim_active():
                 # HomeKit, controller and menu commands cannot race the phone's
                 # PIN digits. The claimant controls input exclusively.
@@ -3064,6 +3312,24 @@ def main(stdscr):
                         art_stop_time   = time.time()+dur_sec if dur_sec else None
                         current_view    = "ART_RUNNING"
 
+            elif current_view == "IMPOSTER_COUNT":
+                if cmd == "UP":
+                    imposter_count_selected = (imposter_count_selected-1) % max(1,len(imposter_count_options))
+                elif cmd == "DOWN":
+                    imposter_count_selected = (imposter_count_selected+1) % max(1,len(imposter_count_options))
+                elif cmd in ("BACK","LEFT"):
+                    current_view = "GAMES_MENU"
+                elif cmd in ("SELECT","RIGHT"):
+                    if imposter_count_options:
+                        imposter_target_count = imposter_count_options[imposter_count_selected]
+                        imposter_pin_stage = 1
+                        imposter_players = []
+                        keypad_entered = keypad_error = ""
+                        keypad_row = keypad_col = 0
+                        current_view = "KEYPAD"
+                    else:
+                        current_view = "GAMES_MENU"
+
             elif current_view == "GAMES_MENU":
                 if cmd == "UP":
                     selected_game_idx = (selected_game_idx-1) % len(GAME_OPTIONS)
@@ -3076,7 +3342,21 @@ def main(stdscr):
                     pending_game_key = game_key
                     pending_game_cmd = game_cmd
                     pending_game_2p  = is2p
-                    if game_key == "TICTACTOE":
+                    if game_key == "IMPOSTER":
+                        pins = load_pins()
+                        emergency = pitv_secrets.emergency_code()
+                        codes = {str(code) for code in pins.values()
+                                 if str(code).isdigit() and len(str(code)) == 6
+                                 and not hmac.compare_digest(str(code), emergency)}
+                        max_players = min(12,len(codes))
+                        if max_players < 3:
+                            show_message(stdscr,["IMPOSTER NEEDS 3+ PLAYERS","Assign unique six-digit PINs first.","Use: screen pin assign <name> <pin>"],color_pair=1,duration=3.0)
+                            current_view = "GAMES_MENU"
+                        else:
+                            imposter_count_options=list(range(3,max_players+1))
+                            imposter_count_selected=0
+                            current_view="IMPOSTER_COUNT"
+                    elif game_key == "TICTACTOE":
                         # Choose 1-player (vs computer) or 2-player first.
                         ttt_sel = 0
                         current_view = "TTT_MODE"
@@ -3102,7 +3382,16 @@ def main(stdscr):
                     current_view = "KEYPAD"
 
             elif current_view == "KEYPAD":
-                if cmd == "UP":
+                verify = False
+                entered = keypad_entered
+                if isinstance(cmd, tuple) and cmd and cmd[0] == "WEB_PIN":
+                    # Phone input changes the PIN buffer directly without moving
+                    # or flashing the highlighted on-TV keypad selection.
+                    if not _web_pin_token_valid(cmd[1], cmd[2]):
+                        continue
+                    entered, verify = keypad_press(str(cmd[3]).upper(), "GAME")
+                    keypad_error = ""
+                elif cmd == "UP":
                     keypad_row = (keypad_row-1) % len(KEYPAD_LAYOUT)
                 elif cmd == "DOWN":
                     keypad_row = (keypad_row+1) % len(KEYPAD_LAYOUT)
@@ -3111,70 +3400,15 @@ def main(stdscr):
                 elif cmd == "RIGHT":
                     keypad_col = (keypad_col+1) % 3
                 elif cmd == "BACK":
-                    # B deletes the last digit; on an empty code it goes back.
                     if keypad_entered:
                         keypad_entered, _ = keypad_press("DEL", "GAME")
                         keypad_error = ""
                     else:
                         current_view = "GAMES_MENU"
                 elif cmd == "SELECT":
-                    key = KEYPAD_LAYOUT[keypad_row][keypad_col]
-                    entered, verify = keypad_press(key, "GAME")
-                    if verify:
-                        who = verify_pin(entered)
-                        if who:
-                            otp_fail_count = 0
-                            # Does this game need two PINs? TICTACTOE only in its
-                            # 2P mode; any other game whose menu row is flagged 2P.
-                            two_player = (
-                                (pending_game_key == "TICTACTOE" and ttt_mode == "2P")
-                                or (pending_game_key != "TICTACTOE" and pending_game_2p)
-                            )
-                            if two_player and ttt_stage == 1:
-                                # Player 1 verified; publish a fresh first-claim
-                                # window for Player 2 before the message overlay.
-                                ttt_p1 = who
-                                ttt_stage = 2
-                                keypad_entered = keypad_error = ""
-                                _publish_pin_entry_state()
-                                log(f"{pending_game_key} P1: {who}")
-                                show_message(stdscr,
-                                             ["", f"Welcome {who}!",
-                                              "Player 2 — enter your PIN"],
-                                             color_pair=2, duration=1.5)
-                            else:
-                                log(f"{pending_game_key} unlocked by {who}")
-                                set_highscore_name(pending_game_cmd[0], who)
-                                # Invalidate the PIN prompt and release its phone
-                                # claimant before a game blocks the menu loop.
-                                current_view = "GAMES_MENU"
-                                _publish_pin_entry_state()
-                                if two_player:
-                                    log(f"{pending_game_key} 2P: {ttt_p1} vs {who}")
-                                    show_message(stdscr,
-                                                 ["", f"{ttt_p1} & {who} — go!"],
-                                                 color_pair=2, duration=1.5)
-                                else:
-                                    show_message(stdscr, ["", f"Welcome {who}!"],
-                                                 color_pair=2, duration=1.5)
-                                if pending_game_key == "SNAKE":
-                                    run_snake(stdscr)
-                                elif pending_game_key == "TICTACTOE":
-                                    run_noughts(stdscr, vs_computer=(ttt_mode == "1P"))
-                                else:
-                                    run_game(stdscr, pending_game_cmd)
-                                current_view = "GAMES_MENU"
-                        else:
-                            otp_fail_count += 1
-                            remaining = OTP_MAX_FAILS - otp_fail_count
-                            if otp_fail_count >= OTP_MAX_FAILS:
-                                log("Max failures — system locked")
-                                system_locked = True
-                                _save_lock_state()
-                                current_view  = "LOCKED"
-                            else:
-                                keypad_error   = f"WRONG PIN — {remaining} attempt(s) left"
-                                keypad_entered = ""
+                    entered, verify = keypad_press(KEYPAD_LAYOUT[keypad_row][keypad_col], "GAME")
+                if verify:
+                    _handle_entered_game_pin(stdscr, entered)
 
             elif current_view in ("ART_RUNNING","CLEAR"):
                 if cmd in ("BACK","SELECT","LEFT"):
@@ -3190,7 +3424,7 @@ def main(stdscr):
 
         # ── Render ──────────────────────────────────────────────────
         if current_view in ("MENU","DURATION_SELECT","GAMES_MENU","CLEAR",
-                             "LOCKED","TTT_MODE"):
+                             "LOCKED","TTT_MODE","IMPOSTER_COUNT"):
             stdscr.erase()
 
         if hard_locked:
@@ -3211,6 +3445,9 @@ def main(stdscr):
             draw_games_menu(stdscr, selected_game_idx)
             draw_log_panel(stdscr)
 
+        elif current_view == "IMPOSTER_COUNT":
+            draw_imposter_count(stdscr, imposter_count_selected, imposter_count_options)
+
         elif current_view == "TTT_MODE":
             _draw_card_list(stdscr, ["1 PLAYER  (vs Computer)", "2 PLAYER"],
                             ttt_sel, title="NOUGHTS & CROSSES",
@@ -3219,10 +3456,13 @@ def main(stdscr):
 
         elif current_view == "KEYPAD":
             name = GAME_OPTIONS[selected_game_idx][0]
-            _kp_2p = ((pending_game_key == "TICTACTOE" and ttt_mode == "2P")
-                      or (pending_game_key != "TICTACTOE" and pending_game_2p))
-            if _kp_2p:
-                name += f" — PLAYER {ttt_stage}"
+            if pending_game_key == "IMPOSTER":
+                name += f" — PLAYER {imposter_pin_stage}"
+            else:
+                _kp_2p = ((pending_game_key == "TICTACTOE" and ttt_mode == "2P")
+                          or (pending_game_key != "TICTACTOE" and pending_game_2p))
+                if _kp_2p:
+                    name += f" — PLAYER {ttt_stage}"
             draw_keypad(stdscr, name, keypad_entered, keypad_error)
 
         elif current_view == "ART_RUNNING":

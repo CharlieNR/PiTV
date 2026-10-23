@@ -46,6 +46,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pitv_secrets
 import pitv_state
+import pitv_imposter
 
 ADMIN           = "--admin" in sys.argv[1:]
 PORT            = 80 if ADMIN else 8080
@@ -793,6 +794,215 @@ function showcode(){{
 </script>""")
 
 
+def imposter_join_body(game_id):
+    """The QR destination lets players re-enter their personal PIN."""
+    state = pitv_imposter.read_state()
+    if not state.get("active") or state.get("game_id") != game_id or not game_id:
+        return ("<h1>Imposter</h1><div class=card><p>This game link has expired "
+                "or the game has ended. Ask the host to start a new game.</p></div>")
+    body = r"""<style>
+.imposter-brand{font-weight:800;letter-spacing:2px;color:#7fd1ff;text-transform:uppercase}
+.imposter-role{font-size:22px;font-weight:800;text-align:center;padding:18px 10px;border-radius:14px}
+.imposter-role.bad{background:#542626;color:#ffd4d4}
+.imposter-role.good{background:#123c2b;color:#c5ffe0}
+.imposter-role.pick{background:#24395c;color:#d6e8ff}
+.imposter-word{font-size:28px;font-weight:800;padding:22px 12px;border-radius:16px;background:#0b0f1a;text-align:center;word-break:break-word}
+.imposter-list{display:grid;gap:8px;margin-top:12px}
+.imposter-list button{text-align:left;margin:0;padding:12px 14px}
+.imposter-list button.selected{outline:2px solid #7fd1ff;background:#234168}
+.imposter-note{background:#1b2942;border-radius:12px;padding:12px;margin:12px 0}
+.imposter-countdown{font-size:24px;font-weight:800;color:#7fd1ff;text-align:center}
+</style>
+<div class=imposter-brand>PiTV · Imposter</div>
+<div class=card id=imposterAuth><h1>Join the game</h1>
+  <p class=muted>Enter your personal six-digit PiTV player PIN to confirm who you are.</p>
+  <form id=imposterPinForm>
+    <input id=imposterPin type=password inputmode=numeric pattern="[0-9]{6}" maxlength=6 autocomplete=one-time-code placeholder="Six-digit player PIN" required>
+    <button type=submit>Join game</button>
+  </form><p class=muted id=imposterAuthError aria-live=polite></p>
+</div>
+<div id=imposterPlay hidden><div class=card><h1 id=imposterHeading>Imposter</h1>
+<p class=muted id=imposterSubheading></p><div id=imposterContent></div></div></div>
+<script>
+(function(){
+ var gameId=__GAME_ID__, storageKey='pitv-imposter-'+gameId;
+ var token=sessionStorage.getItem(storageKey)||'';
+ var authBox=document.getElementById('imposterAuth'),playBox=document.getElementById('imposterPlay');
+ var content=document.getElementById('imposterContent'),heading=document.getElementById('imposterHeading');
+ var sub=document.getElementById('imposterSubheading'),authError=document.getElementById('imposterAuthError');
+ var lastRenderKey='',voteMessage='';
+ function el(tag,text,cls){var n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;}
+ function api(path,fields){return fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams(Object.assign({game_id:gameId,token:token},fields||{}))});}
+ function showAuth(msg){authBox.hidden=false;playBox.hidden=true;authError.textContent=msg||'';}
+ function authenticate(e){
+  e.preventDefault();var pin=document.getElementById('imposterPin').value;
+  if(!/^[0-9]{6}$/.test(pin)){showAuth('Enter all six digits.');return;}
+  authError.textContent='Checking PIN…';
+  fetch('/imposter/auth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+   body:new URLSearchParams({game_id:gameId,pin:pin})})
+   .then(function(r){return r.json().then(function(j){return {r:r,j:j};});})
+   .then(function(x){
+    if(!x.r.ok){
+     var msg={invalid_pin:'That PIN is not valid.',not_a_player:'That PIN is not one of the players selected for this game.',
+      joining_closed:'The game has started and this player has not joined.',game_unavailable:'This game is no longer available.'};
+     showAuth(msg[x.j.error]||'Could not join. Check your PIN and try again.');return;
+    }
+    token=x.j.token;sessionStorage.setItem(storageKey,token);lastRenderKey='';poll();
+   }).catch(function(){showAuth('Could not contact PiTV. Check that you are on the same Wi-Fi.');});
+ }
+ function render(s){
+  authBox.hidden=true;playBox.hidden=false;
+  var phase=s.phase||'ended',role=s.role||'';
+  heading.textContent='Imposter · Round '+(s.round_number||1);
+  var signature=phase+'|'+role+'|'+(s.round_number||1);
+  if(signature!==lastRenderKey){
+   lastRenderKey=signature;content.replaceChildren();sub.textContent='';
+   if(phase==='join'){
+    sub.textContent='Waiting for everyone to scan the QR code.';
+    var p=el('p','Players connected: '+s.joined_count+' / '+s.player_count,'imposter-countdown');
+    p.id='imposterJoinProgress';content.appendChild(p);
+    var list=el('div',null,'imposter-list');
+    s.players.forEach(function(n){list.appendChild(el('div',n,'imposter-note'));});content.appendChild(list);
+   }else if(phase==='choose_word'){
+    if(role==='imposter'){
+     content.appendChild(el('div','YOU ARE THE IMPOSTER','imposter-role bad'));
+     content.appendChild(el('p','You will not receive the word. Listen carefully and try to blend in.','imposter-note'));
+    }else if(role==='chooser'){
+     content.appendChild(el('div','YOU CHOOSE THE WORD','imposter-role pick'));
+     content.appendChild(el('p','Choose one word, then tap Enter to show it to every non-imposter.','imposter-note'));
+     var form=el('form');form.id='imposterWordForm';var inp=el('input');inp.id='imposterWord';inp.maxLength=40;inp.placeholder='Choose a word';inp.required=true;
+     var btn=el('button','Enter');btn.type='submit';form.appendChild(inp);form.appendChild(btn);
+     form.addEventListener('submit',function(e){e.preventDefault();btn.disabled=true;
+      api('/imposter/word',{word:inp.value}).then(function(r){return r.json().then(function(j){return {r:r,j:j};});})
+       .then(function(x){if(!x.r.ok){btn.disabled=false;voteMessage='Could not set the word. Try again.';return;}voteMessage='Word accepted.';poll();})
+       .catch(function(){btn.disabled=false;voteMessage='Could not contact PiTV.';});});
+     content.appendChild(form);
+    }else{
+     content.appendChild(el('div','YOU ARE A PLAYER','imposter-role good'));
+     content.appendChild(el('p','Waiting for the word to be chosen. Keep your role secret.','imposter-note'));
+    }
+   }else if(phase==='round'){
+    if(role==='imposter'){
+     content.appendChild(el('div','YOU ARE THE IMPOSTER','imposter-role bad'));
+     content.appendChild(el('p','You do not know the word. Try to blend in.','imposter-note'));
+    }else{
+     content.appendChild(el('p','YOUR WORD','muted'));
+     content.appendChild(el('div',s.word||'Waiting for word…','imposter-word'));
+    }
+    content.appendChild(el('p','Watch the TV for whose turn it is. Give a clue without saying the exact word.','imposter-note'));
+   }else if(phase==='round_complete'){
+    content.appendChild(el('div','ROUND COMPLETE','imposter-role pick'));
+    content.appendChild(el('p','Wait for the TV to choose another round or start the vote.','imposter-note'));
+   }else if(phase==='vote'){
+    content.appendChild(el('p','Who do you think is the imposter? You may change your vote until time runs out.','imposter-note'));
+    var cd=el('p','15 seconds left','imposter-countdown');cd.id='voteCountdown';content.appendChild(cd);
+    var list=el('div',null,'imposter-list');list.id='imposterVoteList';
+    s.players.forEach(function(n){
+     var b=el('button',n);b.type='button';b.dataset.target=n;
+     b.addEventListener('click',function(){
+      api('/imposter/vote',{target:b.dataset.target}).then(function(r){return r.json().then(function(j){return {r:r,j:j};});})
+       .then(function(x){if(!x.r.ok){voteMessage='Voting has closed.';poll();return;}
+        voteMessage='Vote saved. You can change it before time runs out.';s.my_vote=b.dataset.target;updateVoteButtons(s);})
+       .catch(function(){voteMessage='Could not submit vote.';});
+     });list.appendChild(b);
+    });content.appendChild(list);
+    var status=el('p','','muted');status.id='imposterVoteStatus';content.appendChild(status);
+   }else if(phase==='results'){
+    content.appendChild(el('div','VOTE CLOSED','imposter-role pick'));
+    content.appendChild(el('p','The results are being revealed on the TV.','imposter-note'));
+   }else if(phase==='revealed'){
+    content.appendChild(el('div','THE IMPOSTER WAS','imposter-role bad'));
+    content.appendChild(el('div',s.imposter||'Unknown','imposter-word'));
+    if(s.word)content.appendChild(el('p','The word was: '+s.word,'imposter-note'));
+   }else content.appendChild(el('p','The game has ended.','imposter-note'));
+  }
+  if(phase==='join'){var p=document.getElementById('imposterJoinProgress');if(p)p.textContent='Players connected: '+s.joined_count+' / '+s.player_count;}
+  updateVoteButtons(s);
+ }
+ function updateVoteButtons(s){
+  var list=document.getElementById('imposterVoteList');
+  if(list){
+   Array.prototype.forEach.call(list.querySelectorAll('button'),function(b){b.classList.toggle('selected',b.dataset.target===s.my_vote);});
+   var status=document.getElementById('imposterVoteStatus');
+   if(status)status.textContent=voteMessage||(s.my_vote?'Your vote: '+s.my_vote+'. You can change it.':'Choose a player to submit your vote.');
+   var cd=document.getElementById('voteCountdown');
+   if(cd)cd.textContent=Math.max(0,Math.ceil((Number(s.vote_ends_at)||0)-Date.now()/1000))+' seconds left';
+  }
+ }
+ function poll(){
+  if(!token)return;
+  api('/imposter/state',{}).then(function(r){if(!r.ok){token='';sessionStorage.removeItem(storageKey);showAuth('Your game session expired. Enter your PIN again.');return null;}return r.json();})
+   .then(function(s){if(s)render(s);}).catch(function(){});
+ }
+ document.getElementById('imposterPinForm').addEventListener('submit',authenticate);
+ if(token)poll();else showAuth('');
+ setInterval(poll,1000);
+})();
+</script>""";
+    return body.replace("__GAME_ID__", json.dumps(game_id))
+
+
+def _imposter_players_for_pin(pin):
+    """Require one unique six-digit player PIN; never accept the emergency PIN."""
+    if not pin or not pin.isdigit() or len(pin) != 6 or pitv_secrets.check_emergency_code(pin):
+        return []
+    try: pin_map = pitv_state.load_section("PLAYER_PINS", {})
+    except Exception: pin_map = {}
+    matches = []
+    if isinstance(pin_map, dict):
+        for name, saved in pin_map.items():
+            try: good = hmac.compare_digest(str(saved), pin)
+            except (TypeError, ValueError): good = False
+            if good: matches.append(str(name))
+    return matches
+
+
+def _imposter_api_post(self, path):
+    body = self._body()
+    if body is None:
+        self._json({"ok": False, "error": "bad_request"}, code=413)
+        return
+    game_id = body.get("game_id", "")
+    if path == "/imposter/auth":
+        ip = self._client_ip()
+        wait = _throttle_until(ip)
+        if wait:
+            self._json({"ok": False, "error": "rate_limited", "retry_after": wait}, code=429)
+            return
+        matches = _imposter_players_for_pin(body.get("pin", ""))
+        if len(matches) != 1:
+            _note_failure(ip)
+            self._json({"ok": False, "error": "invalid_pin"}, code=401)
+            return
+        result = pitv_imposter.authenticate_player(game_id, matches[0])
+        if not result.get("ok"):
+            self._json(result, code=403 if result.get("error") == "not_a_player" else 409)
+            return
+        _note_success(ip)
+        self._json(result)
+        return
+    token = body.get("token", "")
+    view = pitv_imposter.player_view(game_id, token)
+    if view is None:
+        self._json({"ok": False, "error": "invalid_game_session"}, code=401)
+    elif path == "/imposter/state":
+        self._json(view)
+    elif path == "/imposter/word":
+        raw = body.get("word", "")
+        word = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", raw).split())
+        if not word or len(word) > 40:
+            self._json({"ok": False, "error": "invalid_word"}, code=400)
+        else:
+            result = pitv_imposter.choose_word(game_id, token, word)
+            self._json(result, code=200 if result.get("ok") else 409)
+    elif path == "/imposter/vote":
+        result = pitv_imposter.set_vote(game_id, token, body.get("target", ""))
+        self._json(result, code=200 if result.get("ok") else 409)
+    else:
+        self._json({"ok": False, "error": "not_found"}, code=404)
+
+
 def gate_body():
     return ("<h1>PiTV Guest</h1><div class=card>"
             "<p>Please ask the administrator to turn on <b>Guest Mode</b>.</p>"
@@ -1059,6 +1269,18 @@ function updatePinEntry(s){
   }
   renderPinPrompt(s);
 }
+(function enablePinPromptSwipe(){
+  var p=document.getElementById('pinPrompt'),x=0,y=0;
+  if(!p)return;
+  p.addEventListener('touchstart',function(e){if(e.changedTouches&&e.changedTouches.length){x=e.changedTouches[0].clientX;y=e.changedTouches[0].clientY;}},{passive:true});
+  p.addEventListener('touchend',function(e){
+    if(!e.changedTouches||!e.changedTouches.length)return;
+    var dx=e.changedTouches[0].clientX-x,dy=e.changedTouches[0].clientY-y;
+    if(dx < -70 && Math.abs(dx)>Math.abs(dy)*1.25)dismissPinPrompt();
+  },{passive:true});
+  p.addEventListener('pointerdown',function(e){x=e.clientX;y=e.clientY;});
+  p.addEventListener('pointerup',function(e){var dx=e.clientX-x,dy=e.clientY-y;if(dx < -70 && Math.abs(dx)>Math.abs(dy)*1.25)dismissPinPrompt();});
+})();
 function renderKeyboardModal(){
   var modal=document.getElementById('keyboardModal');
   if(!modal || modal.hidden) return;
@@ -1336,6 +1558,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/imposter/join":
+            game_id = parse_qs(urlparse(self.path).query).get("g", [""])[0]
+            self._html(imposter_join_body(game_id))
+            return
         if path == "/nfc" and not ADMIN:
             # An NFC tag is a bearer credential, so guessing it is throttled the
             # same way a password is.
@@ -1416,8 +1642,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         # Let PIN endpoints return authenticated JSON errors if Guest Mode
         # has just been switched off, rather than a misleading HTML 200.
-        if not ADMIN and not guest_mode_on() and not path.startswith("/pin/"):
+        if (not ADMIN and not guest_mode_on()
+                and not path.startswith("/pin/")
+                and not path.startswith("/imposter/")):
             self._html(gate_body()); return
+
+        if path.startswith("/imposter/"):
+            _imposter_api_post(self, path)
+            return
 
         if path == "/login":
             ip = self._client_ip()

@@ -22,6 +22,7 @@ PiTV also includes admin and guest web pages. The guest page is handy when frien
 - **Admin page:** manage accounts and TV controls from a browser.
 - **Guest page:** let friends use a phone-friendly remote when Guest Mode is enabled.
 - **Game controllers:** optional Bluetooth controllers and game input support.
+- **Imposter party game:** built-in multiplayer word-bluffing game with local QR joining, PIN verification, secret roles, timed voting and animated results.
 
 ## Installation
 
@@ -118,6 +119,12 @@ When an external PiTV game is running, the guest and admin pages offer **Use pho
 This is intended for games that accept console text input. It is not a way to type into the guest/admin sign-in forms, and it does not trigger Apple's native Control Centre Remote keyboard. When PiTV is waiting for a game PIN, signed-in guest and admin pages show a popup for 10 seconds. Tapping **Enter PIN** claims the on-TV keypad on a first-click-wins basis and opens a phone numpad. Every digit is forwarded immediately to the existing TV keypad; HomeKit remote, controller and web navigation input are ignored while the phone owns that PIN prompt. The lease is released when the keypad closes or advances to the next player's PIN, when the user cancels, or after 90 seconds. The emergency-code lock screen is not broadcast as a player-PIN prompt.
 
 The on-TV PIN keypad can still be navigated with the Apple Remote's arrows, Select and Back controls when no phone has claimed it.
+
+### Imposter party game
+
+Select **IMPOSTER** at the top of the Games Library. Choose the number of players, then enter each player's unique six-digit PIN. The TV displays a QR code that players scan; each player enters their PIN again on their own phone. One person is randomly assigned the imposter and a different player chooses a word. The imposter does not see the word. Everyone else sees it privately on their phone.
+
+The TV tracks each player's turn. After one full round, select **GO ROUND AGAIN** to assign new roles and a new word, or select **VOTE**. Voting lasts 15 seconds; players can change their vote until the timer ends. The TV animates all vote counts from least to most (players with zero votes are hidden), waits five seconds, then reveals the actual imposter. All game state stays on the Pi; no external game service is used.
 
 ### Set a personal emergency code
 
