@@ -27,7 +27,7 @@ import sys
 import pitv_secrets
 import pitv_state
 
-PIN_FILE = os.path.expanduser("~/.pitv/pins.json")
+PIN_FILE = "PLAYER_PINS"
 
 
 def load() -> dict:
@@ -61,7 +61,7 @@ def cmd_emergency(args) -> None:
             print("Emergency code: STILL THE DEFAULT that is published in git.")
             print("Set your own now:  screen emergency set <6 digits>")
             sys.exit(1)
-        print(f"Emergency code: set (stored in {pitv_secrets.EMERGENCY_FILE}).")
+        print(f"Emergency code: set (stored in {pitv_state.STATE_FILE}).")
         return
     if sub == "set":
         code = args[1] if len(args) > 1 else ""
