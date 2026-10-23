@@ -234,8 +234,13 @@ def save_named(path: str, value: Any) -> None:
 
 
 def get_control_key_for_helper() -> int:
-    """Print only the control key for the restricted Homebridge reader helper."""
-    value = read_value("CONTROL_KEY", "")
+    """Print only CONTROL_KEY for Homebridge without creating or changing state."""
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        value = state.get("CONTROL_KEY", "") if isinstance(state, dict) else ""
+    except Exception:
+        return 1
     if not isinstance(value, str) or not value:
         return 1
     print(value)
