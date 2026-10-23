@@ -78,6 +78,12 @@ def _remote_running():
 
 def _web_keyboard_claim_active():
     """Avoid injecting controller keys while a browser owns exclusive typing."""
+    try:
+        with open("/tmp/pitv-game-state", "r", encoding="ascii") as f:
+            if f.read().strip() != "on":
+                return False
+    except OSError:
+        return False
     path = os.path.join(os.path.expanduser("~/.pitv"), "remote-keyboard-lease.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
