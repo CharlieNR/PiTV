@@ -45,6 +45,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import pitv_secrets
+import pitv_state
 
 ADMIN           = "--admin" in sys.argv[1:]
 PORT            = 80 if ADMIN else 8080
@@ -129,20 +130,13 @@ SKY_ACTIONS = {a: tok for a, tok, _ in SKY_BUTTONS}
 # ── storage helpers ──────────────────────────────────────────────────
 def _load(path, default):
     try:
-        with open(path) as f:
-            return json.load(f)
+        return pitv_state.load_named(path, default)
     except Exception:
         return default
 
 
 def _save(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    pitv_state.save_named(path, data)
 
 
 def load_guests():
@@ -153,22 +147,16 @@ def load_guests():
 
 
 def get_secret():
+    key_name = "ADMIN_PORTAL_SECRET" if ADMIN else "GUEST_PORTAL_SECRET"
     try:
-        with open(SECRET_FILE, "rb") as f:
-            s = f.read().strip()
-            if s:
-                return s
-    except Exception:
+        saved = pitv_state.read_value(key_name, "")
+        if saved:
+            return bytes.fromhex(saved)
+    except (ValueError, TypeError):
         pass
-    s = secrets.token_bytes(32)
-    try:
-        os.makedirs(PITV_DIR, exist_ok=True)
-        with open(SECRET_FILE, "wb") as f:
-            f.write(s)
-        os.chmod(SECRET_FILE, 0o600)
-    except Exception:
-        pass
-    return s
+    secret = secrets.token_bytes(32)
+    pitv_state.write_value(key_name, secret.hex())
+    return secret
 
 
 def guest_mode_on():
