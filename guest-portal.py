@@ -70,6 +70,7 @@ PAIR_FILE       = "PAIRING"
 # behaviour; add a CIDR to shut out, say, a VPN range.
 NETWORK_FILE    = "NETWORK_SETTINGS"
 FIFO            = "/tmp/tv_menu.fifo"
+GAME_STATE_FILE = "/tmp/pitv-game-state"
 UDP_ADDR        = ("127.0.0.1", 8129)
 # Admin sessions effectively never expire; guest sessions last a week.
 SESSION_MAX_AGE = (3650 if ADMIN else 7) * 24 * 3600
@@ -508,6 +509,15 @@ def _write_keyboard_lease_locked(lease):
     os.chmod(KEYBOARD_LEASE_PATH, 0o600)
 
 
+def game_keyboard_available():
+    """True only while tv_menu has an external game running for keyboard input."""
+    try:
+        with open(GAME_STATE_FILE, "r", encoding="ascii") as f:
+            return f.read().strip() == "on"
+    except OSError:
+        return False
+
+
 def _read_keyboard_lease_locked():
     """Read/expire a lease only while _keyboard_lease_guard() is held."""
     try:
@@ -527,7 +537,8 @@ def _read_keyboard_lease_locked():
     # not hold the shared keyboard until the timeout.
     guest_blocked = (not bool(lease.get("owner_admin"))
                      and (not guest_mode_on() or guest_locked()))
-    if expired or guest_blocked:
+    game_ended = not game_keyboard_available()
+    if expired or guest_blocked or game_ended:
         _write_keyboard_lease_locked(None)
         return None
     return lease
@@ -538,7 +549,8 @@ def keyboard_lease_status(session_id):
         lease = _read_keyboard_lease_locked()
         if not lease:
             return {"keyboard_busy": False, "keyboard_mine": False,
-                    "keyboard_expires_in": 0}
+                    "keyboard_expires_in": 0,
+                    "keyboard_game_available": game_keyboard_available()}
         mine = bool(session_id and hmac.compare_digest(
             str(lease.get("session_hash", "")), str(session_id)))
         return {
@@ -546,6 +558,7 @@ def keyboard_lease_status(session_id):
             "keyboard_mine": mine,
             "keyboard_expires_in": max(
                 0, int(float(lease.get("expires_at", 0)) - time.time())),
+            "keyboard_game_available": game_keyboard_available(),
         }
 
 
@@ -756,6 +769,9 @@ function renderKeyboardModal(){
   } else if(state && state.keyboard_busy && !state.keyboard_mine){
     status.textContent='Someone else is using the TV keyboard. You cannot type or navigate while they hold it. Try again when they finish.';
     confirmBox.hidden=false; entryBox.hidden=true; claim.disabled=true;
+  } else if(state && !state.keyboard_game_available){
+    status.textContent='Start a PiTV game that accepts keyboard input first. The phone keyboard is for game text entry, not menu navigation.';
+    confirmBox.hidden=false; entryBox.hidden=true; claim.disabled=true;
   } else {
     status.textContent='Would you like to use your phone keyboard to type into the currently running PiTV game?';
     confirmBox.hidden=false; entryBox.hidden=true; claim.disabled=false;
@@ -775,10 +791,18 @@ function claimKeyboard(){
     .then(function(r){return r.json().catch(function(){return {}}).then(function(j){return {r:r,j:j};});})
     .then(function(result){
       if(!result.r.ok){
-        if(state){state.keyboard_busy=!!result.j.keyboard_busy;state.keyboard_mine=false;}
+        if(state){
+          state.keyboard_busy=!!result.j.keyboard_busy;
+          state.keyboard_mine=false;
+          if(typeof result.j.keyboard_game_available==='boolean'){
+            state.keyboard_game_available=result.j.keyboard_game_available;
+          }
+        }
         renderKeyboardModal();
         if(result.r.status===423){
           document.getElementById('keyboardStatus').textContent='Guest controls are currently locked by the administrator.';
+        } else if(result.j.error==='no_running_external_game'){
+          document.getElementById('keyboardStatus').textContent='Start a PiTV game that accepts keyboard input, then claim the keyboard.';
         } else if(result.r.status===409){
           document.getElementById('keyboardStatus').textContent='Someone else claimed the keyboard first. Their input has priority; try again when it is free.';
         } else {
@@ -808,7 +832,8 @@ function keyboardRequestFailed(r){
     keyboardToken='';
     sync();
     document.getElementById('keyboardStatus').textContent=
-      r.status===423 ? 'Guest controls are locked.' : 'Keyboard access expired. Claim it again to continue.';
+      r.status===423 ? 'Guest controls are locked.' :
+      'Keyboard access expired, another user owns it, or the game has ended.';
     renderKeyboardModal();
   } else {
     document.getElementById('keyboardStatus').textContent='Could not send input. Check that the game is still running.';
@@ -1170,6 +1195,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/keyboard/claim":
+                if not game_keyboard_available():
+                    self._json({
+                        "ok": False, "error": "no_running_external_game",
+                        "keyboard_busy": False, "keyboard_mine": False,
+                        "keyboard_game_available": False,
+                    }, code=409)
+                    return
                 with _keyboard_lease_guard():
                     lease = _read_keyboard_lease_locked()
                     if lease and not hmac.compare_digest(
@@ -1240,9 +1272,11 @@ class Handler(BaseHTTPRequestHandler):
                     if not valid:
                         self._json({
                             "ok": False,
-                            "error": "keyboard_lease_expired_or_owned_by_another_user",
+                            "error": ("no_running_external_game" if not game_keyboard_available()
+                                      else "keyboard_lease_expired_or_owned_by_another_user"),
                             "keyboard_busy": bool(lease),
                             "keyboard_mine": False,
+                            "keyboard_game_available": game_keyboard_available(),
                         }, code=409)
                         return
                     lease["expires_at"] = time.time() + KEYBOARD_LEASE_SECONDS
