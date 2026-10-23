@@ -892,8 +892,8 @@ def _web_keyboard_token_valid(token: str) -> bool:
         return False
 
 
-def _clear_web_keyboard_lease() -> None:
-    """Release browser keyboard ownership atomically when an external game ends."""
+def _clear_web_keyboard_lease(owner_admin=None) -> None:
+    """Release browser keyboard ownership safely, optionally for guests only."""
     state_dir = os.path.expanduser("~/.pitv")
     lock_path = os.path.join(state_dir, "remote-keyboard-lease.lock")
     lease_path = os.path.join(state_dir, "remote-keyboard-lease.json")
@@ -903,17 +903,26 @@ def _clear_web_keyboard_lease() -> None:
         try:
             os.fchmod(fd, 0o600)
             fcntl.flock(fd, fcntl.LOCK_EX)
-            try:
-                os.unlink(lease_path)
-            except FileNotFoundError:
-                pass
+            remove = owner_admin is None
+            if not remove:
+                try:
+                    with open(lease_path, "r", encoding="utf-8") as f:
+                        lease = json.load(f)
+                    remove = lease.get("owner_admin") is owner_admin
+                except (FileNotFoundError, ValueError, TypeError, AttributeError):
+                    remove = False
+            if remove:
+                try:
+                    os.unlink(lease_path)
+                except FileNotFoundError:
+                    pass
         finally:
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
                 os.close(fd)
     except OSError as e:
-        log(f"Could not clear phone keyboard lease after game: {e}")
+        log(f"Could not clear phone keyboard lease: {e}")
 
 
 def route_remote_key(tok: str) -> None:
@@ -1466,6 +1475,7 @@ def listen_cec_udp():
                     pass
                 if state == "off":
                     pair_clear()
+                    _clear_web_keyboard_lease(owner_admin=False)
             elif up == "PAIR_SHOW":
                 pair_show()
             elif up in ("SKY_POWER_ON", "SKY_POWER_OFF"):
