@@ -31,7 +31,8 @@ EMERGENCY_FILE = os.path.join(PITV_DIR, "emergency-code")
 # an existing Pi keeps working across this upgrade. Rotate it with
 #     screen emergency set <new 6-digit code>
 # after deploying. `is_default_emergency_code()` is what nags about it.
-LEGACY_EMERGENCY_CODE = "159753"
+DEFAULT_EMERGENCY_CODE = "000000"
+PUBLISHED_EMERGENCY_CODES = {DEFAULT_EMERGENCY_CODE, "159753"}
 
 # PBKDF2 rounds. The Zero 2 W is slow, and the guest portal may hash once per
 # stored guest per login attempt, so this is a compromise between "costly to
@@ -55,14 +56,13 @@ def _valid_code(code):
 
 
 def emergency_code() -> str:
-    """The current emergency code. Seeds the device-only file with the legacy
-    code the first time, so upgrading a Pi never leaves it with no way out of a
-    lockdown."""
+    """The current emergency code. A missing device-only file is seeded with
+    the current public fallback; existing valid per-device codes are retained."""
     code = _read_code()
     if code:
         return code
-    set_emergency_code(LEGACY_EMERGENCY_CODE)
-    return LEGACY_EMERGENCY_CODE
+    set_emergency_code(DEFAULT_EMERGENCY_CODE)
+    return DEFAULT_EMERGENCY_CODE
 
 
 def set_emergency_code(code: str) -> bool:
@@ -80,8 +80,10 @@ def set_emergency_code(code: str) -> bool:
 
 
 def is_default_emergency_code() -> bool:
-    """True while the Pi is still using the code that's public in git."""
-    return hmac.compare_digest(emergency_code(), LEGACY_EMERGENCY_CODE)
+    """True while the Pi is using one of the published fallback codes."""
+    code = emergency_code()
+    return any(hmac.compare_digest(code, candidate)
+               for candidate in PUBLISHED_EMERGENCY_CODES)
 
 
 def check_emergency_code(entered: str) -> bool:
