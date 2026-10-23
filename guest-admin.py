@@ -28,11 +28,11 @@ import pitv_secrets
 import pitv_state
 
 PITV_DIR       = os.path.expanduser("~/.pitv")
-GUEST_FILE     = os.path.join(PITV_DIR, "guests.json")
-ADMIN_FILE     = os.path.join(PITV_DIR, "admin.json")
-PIN_FILE       = os.path.join(PITV_DIR, "pins.json")
-GUEST_SECRET   = os.path.join(PITV_DIR, "portal-secret")
-PAIR_FILE      = os.path.join(PITV_DIR, "pairing.json")
+GUEST_FILE     = "GUEST_ACCOUNTS"
+ADMIN_FILE     = "ADMIN_ACCOUNTS"
+PIN_FILE       = "PLAYER_PINS"
+GUEST_SECRET   = "GUEST_PORTAL_SECRET"
+PAIR_FILE      = "PAIRING"
 GUEST_MODE     = "/tmp/pitv-guest-mode"
 GUEST_LOCK     = "/tmp/pitv-guest-lock"
 
