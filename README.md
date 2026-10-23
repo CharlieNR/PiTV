@@ -40,14 +40,14 @@ sudo apt install -y git
 
 ### 2. Download PiTV
 
-These commands download the development branch, where current changes are made:
+To get the newest changes, download the `experimental` branch:
 
 ```bash
 git clone --branch experimental --single-branch https://github.com/CharlieNR/PiTV.git PiTV
 cd ~/PiTV
 ```
 
-If you already have a PiTV checkout, skip cloning and open that directory.
+For the more conservative `main` branch, replace `experimental` with `main` in the clone command. If you already have a PiTV checkout, skip cloning and open that directory.
 
 ### 3. Install and start PiTV
 
@@ -128,14 +128,33 @@ If Homebridge is installed, `deploy.sh` attempts to install or update the PiTV H
 
 ### Updating PiTV
 
+After you have installed a version that includes these commands, update directly from the PiTV terminal:
+
+```bash
+screen update
+```
+
+This follows the `experimental` branch, which receives newer changes for testing. For the `main` branch instead, run:
+
+```bash
+screen update safe
+```
+
+The updater makes a private backup of your PiTV codes/accounts/settings before deployment, and backs up the shared Homebridge control key if it exists. These backups are saved under `~/pitv-update-backups/`, outside the Git repository. If it finds uncommitted edits in your PiTV checkout, it preserves them in Git stash rather than letting the update overwrite them. It does not automatically reapply those edits to new code.
+
+**Your saved codes are not normally reset by updating.** PiTV's personal settings live on the Pi, separately from its source files, and deployment updates the programs. Valid saved emergency codes, player PINs, guest accounts and admin accounts are preserved. The updater also backs up the private settings before deploying as an extra recovery option.
+
+For the very first upgrade from an older version that does not yet have `screen update`, use:
+
 ```bash
 cd ~/PiTV
 git status --short
+git stash push --include-untracked -m "Backup local changes before PiTV update"
 git pull --ff-only origin experimental
 ./deploy.sh
 ```
 
-Check `git status --short` first. If local edits prevent the update, back them up before resolving the conflict. Do not blindly discard changes with `git reset --hard`.
+If there are no local edits, Git may say there was nothing to stash; that is fine. If a pull or update fails, stop and read the error instead of resetting the repository or deleting configuration files.
 
 ## Command reference
 
@@ -225,6 +244,15 @@ After three incorrect game PIN attempts, the game keypad locks. Repeated failed 
 | `screen admin list` | List administrator usernames. |
 | `screen admin remove <username>` | Remove an administrator account. |
 
+### Update commands
+
+| Command | What it does |
+|---|---|
+| `screen update` | Back up device settings, then update from `experimental` and deploy it. |
+| `screen update safe` | Back up device settings, then update from `main` and deploy it. |
+
+Updates do not intentionally reset your saved codes or accounts. Private settings backups are stored in `~/pitv-update-backups/`; local uncommitted code edits are preserved in Git stash.
+
 ### Remote and logs
 
 | Command | What it does |
@@ -283,6 +311,18 @@ sudo journalctl -u pitv-admin.service --since "15 minutes ago" --no-pager
 ```
 
 Look for errors or a rejected cross-origin request. Never share passwords, session cookies, NFC links or emergency codes in bug reports.
+
+### The menu appears frozen after leaving Music / AirPlay
+
+An older version could leave the menu waiting for a key after exiting `screen music`, making the display appear frozen. The current code restores the menu's normal input behaviour when Music exits. This fix is in both branches; update and test the menu again after leaving Music.
+
+To exit Music, use the remote's Back/Home control or the keyboard's `Esc`, `q`, or `b` key. If it still appears frozen after updating, collect:
+
+```bash
+screen log
+tail -n 100 /tmp/uxplay.log
+sudo journalctl -u pitv-menu.service --since "15 minutes ago" --no-pager
+```
 
 ### Admin or guest page won't load
 
@@ -354,10 +394,6 @@ sudo journalctl -u pitv-menu.service --since "15 minutes ago" --no-pager
 If the menu service has failed, its command channel may be missing until the service starts successfully.
 
 ## FAQ
-
-### Does PiTV need router port forwarding?
-
-No. PiTV installation does not create router port-forwarding rules or public tunnels. If you have manually configured port forwarding, IPv6 access, a VPN, a reverse proxy or a public tunnel, check those separately.
 
 ### Can I control everything on a Fire TV Stick with HDMI-CEC?
 
