@@ -24,8 +24,8 @@ import pitv_secrets
 import pitv_state
 
 PITV_DIR     = os.path.expanduser("~/.pitv")
-SKY_FILE     = os.path.join(PITV_DIR, "sky.json")
-NETWORK_FILE = os.path.join(PITV_DIR, "network.json")
+SKY_FILE     = "SKY_SETTINGS"
+NETWORK_FILE = "NETWORK_SETTINGS"
 TV_INPUT     = "/tmp/pitv-tv-input"
 SKY_PHYS     = "10:00"
 
