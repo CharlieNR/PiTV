@@ -203,7 +203,7 @@ echo "----------------------------------------"
 
 # The emergency (master) code used to be hardcoded in files that are in git, so
 # say so plainly until this Pi has one of its own.
-if ! python3 /opt/pitv/pin-admin.py emergency status >/dev/null 2>&1; then
+if ! sudo -u "$PITV_USER" -H /usr/bin/python3 /opt/pitv/pin-admin.py emergency status >/dev/null 2>&1; then
     echo
     echo "!! The emergency code on this Pi is still the one published in git."
     echo "!! Set your own now:  screen emergency set <6 digits>"
