@@ -21,6 +21,7 @@ import stat
 import sys
 
 import pitv_secrets
+import pitv_state
 
 PITV_DIR     = os.path.expanduser("~/.pitv")
 SKY_FILE     = os.path.join(PITV_DIR, "sky.json")
@@ -31,16 +32,13 @@ SKY_PHYS     = "10:00"
 
 def _load(path, default):
     try:
-        with open(path) as f:
-            return json.load(f)
+        return pitv_state.load_named(path, default)
     except Exception:
         return default
 
 
 def _save(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    pitv_state.save_named(path, data)
 
 
 # ── sky ──────────────────────────────────────────────────────────────
@@ -98,8 +96,9 @@ def cmd_control(args):
     if sub == "status":
         key = pitv_secrets.control_key()
         print("Signed control channel (UDP 127.0.0.1:8129)")
-        print(f"  Key file    : {path}")
-        print(f"  Permissions : {_readers_of(path)}")
+        print(f"  Central state: {path}")
+        print("  Key storage : private to the PiTV user; only the control key is")
+        print("                exposed to Homebridge by the restricted reader helper.")
         print(f"  Fingerprint : {pitv_secrets.key_fingerprint(key)}")
         if not key:
             print("  !! No readable key: tv_menu refuses every command. "
@@ -107,11 +106,11 @@ def cmd_control(args):
             sys.exit(1)
         hb = _homebridge_user()
         if hb:
-            ok = _can_read(path, hb)
+            ready = (os.path.exists("/usr/local/bin/pitv-read-control-key")
+                     and os.path.exists("/etc/sudoers.d/pitv-control-key"))
             print(f"  Homebridge  : user '{hb}' "
-                  + ("can read the key" if ok else
-                     "CANNOT read the key — the Home app's TV tile won't work. "
-                     "Run ./deploy.sh, or paste the key into the plugin config"))
+                  + ("restricted key reader is installed" if ready else
+                     "key reader is not installed — run ./deploy.sh"))
         print("  Rejections  : see `screen log` for 'Control UDP: rejected'")
         return
     if sub == "key":
@@ -126,12 +125,11 @@ def cmd_control(args):
             import secrets as _secrets
             new = _secrets.token_hex(32)
             try:
-                with open(path, "w") as f:
-                    f.write(new + "\n")
-            except OSError as e:
-                print(f"Could not write {path}: {e}")
+                pitv_state.write_value("CONTROL_KEY", new)
+            except Exception as e:
+                print(f"Could not update central state file {path}: {e}")
                 print("Try:  sudo ./deploy.sh"); sys.exit(1)
-            print(f"New key written to {path} "
+            print(f"New key written to the central state file {path} "
                   f"(fingerprint {pitv_secrets.key_fingerprint(new.encode())}).")
             print("tv_menu picks it up on its own. Restart Homebridge so the "
                   "plugin re-reads it:  sudo hb-service restart")
