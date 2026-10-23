@@ -55,6 +55,8 @@ SDL2 games (chromium-bsu, lbreakout2, vitetris) also read the keyboard via
 evdev on the console, so this mapper is started for them too.
 """
 
+import json
+import os
 import subprocess
 import sys
 import time
@@ -71,6 +73,17 @@ def _remote_running():
         return subprocess.run(["pgrep", "-f", "remote.py"],
                               capture_output=True).returncode == 0
     except Exception:
+        return False
+
+
+def _web_keyboard_claim_active():
+    """Avoid injecting controller keys while a browser owns exclusive typing."""
+    path = os.path.join(os.path.expanduser("~/.pitv"), "remote-keyboard-lease.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lease = json.load(f)
+        return float(lease.get("expires_at", 0)) > time.time()
+    except (OSError, ValueError, TypeError, AttributeError):
         return False
 
 # Analog dead-zone.  Sticks report roughly -32768..32767; treat anything
@@ -373,11 +386,26 @@ def main():
 
     try:
         while True:
+            keyboard_claimed = _web_keyboard_claim_active()
+            if keyboard_claimed:
+                # Clear held directions and repeat timers so controller input
+                # cannot fight a browser keyboard claim, and does not resume
+                # unexpectedly when that claim expires.
+                for s in state.values():
+                    s["hat"] = {"x": 0, "y": 0}
+                    s["stick"] = {"x": 0, "y": 0}
+                    s["rstick"] = {"x": 0, "y": 0}
+                    s["repeat"] = {"x": [0, 0.0], "y": [0, 0.0]}
+                    s["rrepeat"] = {"x": [0, 0.0], "y": [0, 0.0]}
+                    s["digit"] = 0
+
             for key, _ in sel.select(timeout=REPEAT_INTERVAL / 2):
                 pi   = dev_player.get(key.fileobj.fileno(), 0)
                 btns = PLAYERS[pi]["buttons"]
                 try:
                     for event in key.fileobj.read():
+                        if keyboard_claimed or _web_keyboard_claim_active():
+                            continue
                         if event.type == ecodes.EV_KEY and event.value == 1:
                             if split_button(pi, event.code):
                                 continue
@@ -422,12 +450,13 @@ def main():
                     pass
 
             now = time.time()
-            for pi in state:
-                update_axis(pi, "x", now)
-                update_axis(pi, "y", now)
-                if split_tetris:
-                    update_raxis(pi, "x", now)
-                    update_raxis(pi, "y", now)
+            if not keyboard_claimed and not _web_keyboard_claim_active():
+                for pi in state:
+                    update_axis(pi, "x", now)
+                    update_axis(pi, "y", now)
+                    if split_tetris:
+                        update_raxis(pi, "x", now)
+                        update_raxis(pi, "y", now)
 
     except (KeyboardInterrupt, OSError):
         pass
