@@ -579,11 +579,20 @@ def listen_fifo():
                             log("UNLOCK rejected")
                         continue
 
-                    # `screen remote` raw typing: "TYPE x" sends one literal
-                    # character (case-sensitive) into a running external game —
-                    # e.g. a digit for Sudoku's grid size, or 'f' to flag a mine.
-                    # Ignored unless an external game is on screen. Not logged
-                    # (would flood the log while typing).
+                    # Fixed special keys from the exclusive phone-keyboard
+                    # lease. Unlike ordinary remote keys, these must reach the
+                    # active game while a browser owns keyboard input.
+                    if raw[:9].upper() == "TYPE_KEY ":
+                        if controller_mode == "GAME_EXTERNAL":
+                            key = raw[9:].strip().upper()
+                            if key in ("ENTER", "SPACE", "TAB", "ESC", "BKSP"):
+                                _remote_inject(key)
+                        continue
+
+                    # `screen remote` / phone web keyboard raw typing: "TYPE x"
+                    # sends literal characters into a running external game.
+                    # Ignored unless an external game is on screen, and never
+                    # logged because typed content may be private.
                     if raw[:5].upper() == "TYPE " and len(raw) > 5:
                         if controller_mode == "GAME_EXTERNAL":
                             for ch in raw[5:]:
@@ -820,6 +829,17 @@ def sky_key(token: str) -> bool:
 REMOTE_MENU_NAV = {"UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "SPEED"}
 
 
+def _web_keyboard_claim_active() -> bool:
+    """Whether a browser currently owns exclusive input for an external game."""
+    path = os.path.join(os.path.expanduser("~/.pitv"), "remote-keyboard-lease.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lease = json.load(f)
+        return float(lease.get("expires_at", 0)) > time.time()
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def route_remote_key(tok: str) -> None:
     """One place that decides where a remote or portal nav key goes.
 
@@ -833,6 +853,12 @@ def route_remote_key(tok: str) -> None:
         if _sky_routes_keys():
             _run_cec_cmd("tx 1f:82:20:00")     # back to PiTV (HDMI 2)
         input_queue.append("HOME")
+        return
+    if controller_mode == "GAME_EXTERNAL" and _web_keyboard_claim_active():
+        # There is no way to identify which human pressed the HomeKit RemoteKey.
+        # While a browser owns text entry, discard competing remote navigation;
+        # the lease owner's typed text and fixed TYPE_KEY commands bypass this.
+        log(f"Remote key {tok} ignored while the phone keyboard owns game input")
         return
     if controller_mode == "GAME_EXTERNAL":
         # ENTER behaves as SELECT here (Enter AND Space), so a remote's Enter
