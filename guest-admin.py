@@ -170,7 +170,7 @@ def cmd_admin_set(args):
     admins = _load(ADMIN_FILE, {})
     admins[user] = pitv_secrets.hash_password(password)
     _save(ADMIN_FILE, admins)
-    print(f"Admin '{user}' set.  Portal: http://{local_ip()}/  (raspberrypi.local)")
+    print(f"Admin '{user}' set.  Portal: http://{local_ip()}/  (<hostname>.local)")
 
 
 def cmd_admin_list():

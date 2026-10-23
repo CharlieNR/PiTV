@@ -19,7 +19,13 @@
 #   sudo reboot
 set -euo pipefail
 
-USER_NAME="${1:-charlieneedler}"
+# Prefer an explicitly supplied account, then the account that invoked sudo,
+# then the current account. No PiTV-specific username is assumed.
+USER_NAME="${1:-${SUDO_USER:-$(id -un)}}"
+if ! id "$USER_NAME" >/dev/null 2>&1; then
+    echo "ERROR: user '$USER_NAME' does not exist." >&2
+    exit 1
+fi
 
 echo "Granting controller key-injection access for user: $USER_NAME"
 

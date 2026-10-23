@@ -22,7 +22,7 @@ longer clears a lockdown.
 ## Runtime layout
 
 - The menu is `tv_menu.py`, run by the **`pitv-menu`** systemd service
-  (`pitv-menu.service`) as user **`charlieneedler`** on **tty1**
+  (`pitv-menu.service`) as the installer account (resolved by `deploy.sh`) on **tty1**
   (`TERM=linux`, no X11 — it draws to the Linux framebuffer console).
 - Deployed copy lives in **`/opt/pitv/`**. Deploy with **`./deploy.sh`**
   (copies `*.sh *.py *.service` + the plugin folder to `/opt/pitv`, reloads
@@ -259,7 +259,7 @@ Data lives in `~/.pitv/guests.json` + `~/.pitv/pins.json` (device-only).
 
 The **same `guest-portal.py`** run with `--admin` (`pitv-admin.service`,
 `AmbientCapabilities=CAP_NET_BIND_SERVICE` so it binds **port 80** →
-`http://raspberrypi.local`) is the admin portal: username+password login
+`http://<hostname>.local`) is the admin portal: username+password login
 (`screen admin password set <user> <pw>`, hashed in `~/.pitv/admin.json`), the
 same controls, **not** gated by Guest Mode, plus a Guest Mode on/off toggle
 (the plugin polls `/tmp/pitv-guest-mode` so the Home switch stays in sync).

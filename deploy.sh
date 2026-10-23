@@ -117,7 +117,21 @@ fi
 # tv_menu.py only accepts SIGNED commands on its UDP channel. Homebridge runs
 # as a different user, so the key lives in /etc/pitv/control.key, readable by
 # the 'pitv' group, with both users in it.
+# Resolve the interactive installer account instead of assuming a particular
+# username. This works both with "sudo ./deploy.sh" and direct invocation.
 PITV_USER="${SUDO_USER:-$(id -un)}"
+if ! id "$PITV_USER" >/dev/null 2>&1; then
+    echo "ERROR: install user '$PITV_USER' does not exist."
+    exit 1
+fi
+PITV_GROUP="$(id -gn "$PITV_USER")"
+PITV_HOME="$(getent passwd "$PITV_USER" | cut -d: -f6)"
+if [ -z "$PITV_HOME" ] || [ ! -d "$PITV_HOME" ]; then
+    echo "ERROR: could not resolve home directory for '$PITV_USER'."
+    exit 1
+fi
+echo "Configuring PiTV services for user '$PITV_USER' (home: $PITV_HOME)."
+
 HB_USER="$(sed -n 's/^User=//p' /etc/systemd/system/homebridge.service \
                                 /lib/systemd/system/homebridge.service 2>/dev/null | head -1)"
 [ -z "$HB_USER" ] && id homebridge >/dev/null 2>&1 && HB_USER="homebridge"
@@ -143,9 +157,15 @@ fi
 
 # Reload systemd services
 echo "Reloading systemd service..."
-sudo cp pitv-menu.service /etc/systemd/system/
-sudo cp pitv-guest.service /etc/systemd/system/
-sudo cp pitv-admin.service /etc/systemd/system/
+# Render service templates for this installation's user/group/home. The
+# checked-in files contain placeholders so no specific Linux account is needed.
+for service in pitv-menu.service pitv-guest.service pitv-admin.service; do
+    sudo sed \
+        -e "s|@PITV_USER@|$PITV_USER|g" \
+        -e "s|@PITV_GROUP@|$PITV_GROUP|g" \
+        -e "s|@PITV_HOME@|$PITV_HOME|g" \
+        "$service" | sudo tee "/etc/systemd/system/$service" >/dev/null
+done
 sudo systemctl daemon-reload
 sudo systemctl restart pitv-menu.service
 sudo systemctl enable pitv-guest.service pitv-admin.service 2>/dev/null || true

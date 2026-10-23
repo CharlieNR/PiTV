@@ -7,7 +7,7 @@ Runs in one of two modes from the same code:
   guest  (default, port 8080)  — password OR NFC login; TV power, HDMI input,
          menu D-pad; shows the guest's player PIN. ONLY works while the Apple
          Home "Guest Mode" switch is ON.
-  admin  (--admin, port 80 -> http://raspberrypi.local) — username + password
+  admin  (--admin, port 80 -> http://<hostname>.local) — username + password
          login; the same controls PLUS a Guest Mode on/off toggle; never gated.
 
 Passwords are PBKDF2-HMAC-SHA256 (see pitv_secrets.py); records written by

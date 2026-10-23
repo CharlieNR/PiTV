@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=charlieneedler
-Group=charlieneedler
-Environment=HOME=/home/charlieneedler
+User=@PITV_USER@
+Group=@PITV_GROUP@
+Environment=HOME=@PITV_HOME@
 WorkingDirectory=/opt/pitv
 # Bind the privileged port 80 without running as root.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
