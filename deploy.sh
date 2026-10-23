@@ -99,14 +99,15 @@ if command -v gst-inspect-1.0 >/dev/null 2>&1; then
     fi
 fi
 
-# QR display for the built-in Imposter game; the game has a URL fallback if
-# qrencode cannot be installed (for example, while offline).
-if ! command -v qrencode >/dev/null 2>&1; then
-    if sudo apt-get install -y qrencode >/dev/null; then
-        echo "Installed qrencode for Imposter phone joining."
-    else
-        echo "Warning: qrencode could not be installed; Imposter will show the join URL instead."
-    fi
+# Imposter QR generation uses the real Python qrcode module and its
+# boolean module matrix, rather than parsing terminal-formatted QR text.
+if ! python3 -c 'import qrcode; from qrcode.constants import ERROR_CORRECT_M' >/dev/null 2>&1; then
+    echo "Installing Python qrcode module for Imposter phone joining..."
+    sudo apt-get install -y python3-qrcode
+fi
+if ! python3 -c 'import qrcode; from qrcode.constants import ERROR_CORRECT_M' >/dev/null 2>&1; then
+    echo "ERROR: Python qrcode module is not available; refusing to deploy a non-scannable QR substitute."
+    exit 1
 fi
 
 # Make sure all scripts are executable
