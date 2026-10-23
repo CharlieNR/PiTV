@@ -144,17 +144,31 @@ The updater makes a private backup of your PiTV codes/accounts/settings before d
 
 **Your saved codes are not normally reset by updating.** PiTV's personal settings live on the Pi, separately from its source files, and deployment updates the programs. Valid saved emergency codes, player PINs, guest accounts and admin accounts are preserved. The updater also backs up the private settings before deploying as an extra recovery option.
 
-For the very first upgrade from an older version that does not yet have `screen update`, use:
+For the very first upgrade from an older version that does not yet have `screen update`, back up settings and install the updater once:
 
 ```bash
+BACKUP="$HOME/pitv-update-backups/bootstrap-$(date +%Y%m%d-%H%M%S)"
+umask 077
+mkdir -p "$BACKUP"
+chmod 700 "$HOME/pitv-update-backups" "$BACKUP"
+if [ -d "$HOME/.pitv" ]; then
+  cp -a "$HOME/.pitv" "$BACKUP/pitv"
+  chmod -R go-rwx "$BACKUP/pitv"
+fi
+if sudo test -f /etc/pitv/control.key; then
+  sudo cp -p /etc/pitv/control.key "$BACKUP/control.key"
+  sudo chown "$(id -u):$(id -g)" "$BACKUP/control.key"
+  chmod 600 "$BACKUP/control.key"
+fi
+
 cd ~/PiTV
 git status --short
 git stash push --include-untracked -m "Backup local changes before PiTV update"
 git pull --ff-only origin experimental
-./deploy.sh
+PITV_SKIP_REBOOT_PROMPT=1 ./deploy.sh
 ```
 
-If there are no local edits, Git may say there was nothing to stash; that is fine. If a pull or update fails, stop and read the error instead of resetting the repository or deleting configuration files.
+This keeps a private backup of the existing PiTV data and moves uncommitted repository edits into Git stash before pulling. If there are no local edits, Git may say there was nothing to stash; that is fine. If a pull or update fails, stop and read the error instead of resetting the repository or deleting configuration files.
 
 ## Command reference
 
