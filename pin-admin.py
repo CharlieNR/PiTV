@@ -2,9 +2,9 @@
 """
 /opt/pitv/pin-admin.py — manage PiTV player PINs.
 
-Invoked by the `screen pin ...` CLI. PINs live in ~/.pitv/pins.json (device
-only, never committed) as {name: "6-digit PIN"}. tv_menu.py reads the same
-file to unlock locked games, logging who used which PIN.
+Invoked by the `screen pin ...` CLI. PINs live under PLAYER_PINS in the
+private ~/.pitv/pitv-state.json file as {name: "6-digit PIN"}. tv_menu.py reads
+the same section to unlock locked games, logging who used which PIN.
 
   screen pin assign <name>     create (or show) a person's PIN
   screen pin list              list everyone's PIN
@@ -12,8 +12,8 @@ file to unlock locked games, logging who used which PIN.
   screen pin revoke <name>     alias for remove
   screen pin rename <old> <new>
 
-Also owns the emergency (master) code, which lives device-only in
-~/.pitv/emergency-code:
+Also owns the emergency (master) PIN, stored as EMERGENCY_PIN in the same
+private central state file:
 
   screen emergency status      is it still the code published in git?
   screen emergency set <code>  set a new 6-digit master code
