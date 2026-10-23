@@ -112,7 +112,9 @@ sudo cp -f .gitignore VERSION /opt/pitv/ 2>/dev/null || true
 # A previous interrupted deployment can leave /opt/pitv or a newly copied
 # script unreadable to the normal PiTV account. Make the code readable/traversable
 # before running state initialisation as that account.
+sudo chown root:root /opt/pitv
 sudo chmod 755 /opt/pitv
+sudo chown root:root /opt/pitv/*.py /opt/pitv/*.sh /opt/pitv/*.service
 sudo chmod 755 /opt/pitv/*.py /opt/pitv/*.sh
 
 # Copy the Homebridge TV plugin folder AND reinstall it into Homebridge.
