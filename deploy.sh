@@ -157,20 +157,17 @@ else
 fi
 echo "Persistent state: $STATE_FILE"
 
-# Retire the old system key only once the central state file contains a control
-# key. If an existing state file is incomplete, fail safely and preserve the old
-# key for recovery rather than silently disconnecting Homebridge.
+# Verify the control key exists in central state before preparing Homebridge.
+# If an existing state file is incomplete, preserve the old key and fail safely.
 if ! sudo -u "$PITV_USER" -H /usr/bin/env PITV_STATE_FILE="$STATE_FILE" \
     /usr/bin/python3 /opt/pitv/pitv_state.py get-control-key >/dev/null 2>&1; then
     echo "ERROR: central state file has no readable CONTROL_KEY."
     echo "Existing control key (if any) has been retained at /etc/pitv/control.key."
     exit 1
 fi
-sudo rm -f /etc/pitv/control.key
-
 # Homebridge needs the control key to sign local commands, but must not be able
 # to read password hashes, account tokens or other private state. Give it one
-# root-owned, argument-free helper which returns only CONTROL_KEY.
+# root-owned, no-argument helper which returns only CONTROL_KEY.
 if [ -n "$HB_USER" ] && id "$HB_USER" >/dev/null 2>&1; then
     sudo tee /usr/local/bin/pitv-read-control-key >/dev/null <<EOF
 #!/bin/sh
@@ -183,13 +180,14 @@ EOF
     sudo chown root:root /etc/sudoers.d/pitv-control-key
     sudo chmod 440 /etc/sudoers.d/pitv-control-key
     sudo visudo -cf /etc/sudoers.d/pitv-control-key >/dev/null
+    sudo rm -f /etc/pitv/control.key
     echo "Installed restricted control-key access for Homebridge user '$HB_USER'."
     if command -v hb-service >/dev/null 2>&1; then
         sudo hb-service restart 2>/dev/null || true
     fi
 else
-    echo "WARNING: Homebridge user was not found. The TV tile will need a configured controlKey"
-    echo "or a later deploy after Homebridge is installed."
+    echo "WARNING: Homebridge user was not found; the old system control key, if present,"
+    echo "has been retained for recovery. Run deploy again after Homebridge is installed."
 fi
 
 # Reload systemd services
