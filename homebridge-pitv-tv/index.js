@@ -17,11 +17,10 @@
 // a localhost packet. tv_menu.py owns the CEC bus and runs the commands.
 //
 // Every datagram is SIGNED: "PITV1 <ts> <nonce> <hmac-sha256> <payload>",
-// keyed on a secret shared with tv_menu.py. deploy.sh writes it to
-// /etc/pitv/control.key and puts the Homebridge user in the 'pitv' group so
-// this plugin can read it; `controlKey`/`controlKeyFile` in the platform
-// config override that. Without the key tv_menu drops everything we send, and
-// the log below says so.
+// keyed on CONTROL_KEY inside the private central PiTV state file. Homebridge
+// can retrieve only that key through the restricted helper installed by
+// deploy.sh; it cannot read the stored accounts or other persistent settings.
+// Explicit `controlKey`/`controlKeyFile` platform options remain overrides.
 //   TV_ON | TV_OFF        -> power
 //   CEC <tx frame>        -> input switching
 //   KEY <TOKEN>           -> menu navigation
@@ -45,9 +44,10 @@ const TV_INPUT_FILE = '/tmp/pitv-tv-input';
 // tv_menu.py writes joke mode's real state here (it clears it on boot, and
 // `screen joke on|off` flips it too), so the Home switch stays honest.
 const JOKE_STATE_FILE = '/tmp/pitv-joke-mode';
-// Shared secret for the signed control channel (see pitv_secrets.py).
-const CONTROL_KEY_FILES = ['/etc/pitv/control.key'];
-const CONTROL_PREFIX    = 'PITV1';
+// Shared secret is retrieved through a restricted helper. Runtime status
+// markers below stay in /tmp and are not persistent PiTV settings.
+const CONTROL_KEY_HELPER = '/usr/local/bin/pitv-read-control-key';
+const CONTROL_PREFIX     = 'PITV1';
 
 // Broadcast "Active Source = <physical address>" so the TV switches input.
 // Initiator "1" = the Pi's CEC logical address (libcec registers as Recorder 1
@@ -101,28 +101,37 @@ class PiTVTelevisionPlatform {
     this.accessories.push(accessory);
   }
 
-  // Read the shared control key: explicit config first, then the file
-  // deploy.sh sets up. Returns '' if we can't get one — every send then fails
-  // loudly rather than firing commands tv_menu will silently drop.
+  // Read CONTROL_KEY without exposing the rest of the central state file.
+  // deploy.sh permits the Homebridge service user to invoke only this helper.
   loadControlKey() {
     if (this.config.controlKey) return String(this.config.controlKey).trim();
-    const paths = this.config.controlKeyFile
-      ? [this.config.controlKeyFile, ...CONTROL_KEY_FILES]
-      : CONTROL_KEY_FILES;
-    for (const p of paths) {
+
+    if (this.config.controlKeyFile) {
       try {
-        const k = fs.readFileSync(p, 'utf8').trim();
-        if (k) {
-          this.log.info(`Control key loaded from ${p}.`);
-          return k;
+        const custom = fs.readFileSync(this.config.controlKeyFile, 'utf8').trim();
+        if (custom) {
+          this.log.info(`Control key loaded from configured file ${this.config.controlKeyFile}.`);
+          return custom;
         }
-      } catch (e) { /* try the next one */ }
+      } catch (e) { /* use the private central state reader below */ }
     }
+
+    try {
+      const key = require('child_process').execFileSync(
+        '/usr/bin/sudo',
+        ['-n', CONTROL_KEY_HELPER],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      ).trim();
+      if (key) {
+        this.log.info('Control key loaded from the central PiTV state file.');
+        return key;
+      }
+    } catch (e) { /* helper not installed or state unavailable */ }
+
     this.log.error(
       'No control key: tv_menu.py will reject every command from this plugin. '
-      + 'Run ./deploy.sh on the Pi (it writes /etc/pitv/control.key and adds '
-      + 'the Homebridge user to the "pitv" group), then restart Homebridge. '
-      + 'Check it with: screen control status');
+      + 'Run ./deploy.sh on the Pi to install the restricted central-state reader, '
+      + 'then restart Homebridge. Check it with: screen control status');
     return '';
   }
 
