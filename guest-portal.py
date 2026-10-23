@@ -15,12 +15,10 @@ older versions were a single round of SHA-256 and are re-hashed in place the
 next time that person signs in. Login failures are counted per client IP and
 locked out with a doubling backoff.
 
-Data (all under ~/.pitv, device-only, never committed):
-  guests.json  {"meta":{...},"guests":{user:{algo,salt,iters,pwhash,token}}}
-  admin.json   {user:{algo,salt,iters,pwhash}}
-  pins.json    shared with pin-admin.py; guest player PINs live here by name
-  portal-secret  HMAC key for signed session cookies
-  emergency-code the master code (pitv_secrets.py owns it)
+Persistent data lives together in ~/.pitv/pitv-state.json (device-only,
+never committed): guest/admin accounts and password hashes, player PINs,
+portal-signing secrets, EMERGENCY_PIN, CONTROL_KEY, pairing, Sky/network
+settings and persistent lockout state. pitv_state.py is the shared reader/writer.
 State:
   /tmp/pitv-guest-mode   "on"/"off" (Home switch, or the admin toggle)
 Actuation:
@@ -417,8 +415,7 @@ def set_guest_lock(on):
 def sky_on():
     """Is Sky control switched on? Only then does the portal show its panel."""
     try:
-        with open(SKY_FILE) as f:
-            return bool(json.load(f).get("enabled"))
+        return bool(pitv_state.load_section("SKY_SETTINGS", {}).get("enabled"))
     except Exception:
         return False
 
