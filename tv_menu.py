@@ -66,9 +66,9 @@ def log_clear() -> None:
 #
 # Locked games are opened with a personal PIN. PINs are managed from the CLI
 # (`screen pin assign|list|remove|rename|revoke`) and stored per-person in
-# PIN_FILE, so the log records WHO opened each game. The emergency code is a
-# master that always works; it lives in ~/.pitv/emergency-code (device-only,
-# read fresh on every check) and is set with `screen emergency set <code>`.
+# PLAYER_PINS section in the central state file, so the log records WHO
+# opened each game. EMERGENCY_PIN is the master that always works; it is read
+# fresh on every check and set with `screen emergency set <code>`.
 
 FREE_GAMES      = set()          # every game requires a PIN
 OTP_MAX_FAILS   = 3
