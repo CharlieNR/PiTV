@@ -25,27 +25,21 @@ import secrets
 import sys
 
 import pitv_secrets
+import pitv_state
 
 PIN_FILE = os.path.expanduser("~/.pitv/pins.json")
 
 
 def load() -> dict:
     try:
-        with open(PIN_FILE) as f:
-            d = json.load(f)
+        d = pitv_state.load_section("PLAYER_PINS", {})
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
 
 
 def save(d: dict) -> None:
-    os.makedirs(os.path.dirname(PIN_FILE), exist_ok=True)
-    with open(PIN_FILE, "w") as f:
-        json.dump(d, f, indent=2)
-    try:
-        os.chmod(PIN_FILE, 0o600)
-    except OSError:
-        pass
+    pitv_state.save_section("PLAYER_PINS", d)
 
 
 def new_pin(existing: dict) -> str:
