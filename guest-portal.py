@@ -695,12 +695,27 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _redirect(self, location, cookie=None):
-        self.send_response(302)
+        # Use POST/Redirect/GET and provide a real HTML fallback for browsers
+        # that do not handle an empty redirect response correctly.
+        status = 303 if self.command == "POST" else 302
+        safe_location = html.escape(location, quote=True)
+        data = (
+            "<!doctype html><html><head><meta charset=utf-8>"
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<meta http-equiv="refresh" content="0;url={safe_location}">'
+            "</head><body>"
+            f'<p>Continuing to <a href="{safe_location}">PiTV</a>.</p>'
+            "</body></html>"
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
         self.send_header("Location", location)
         self._security_headers()
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
+        self.wfile.write(data)
 
     def _client_ip(self):
         # Direct LAN connections only — no proxy, so no XFF to trust.
@@ -710,14 +725,19 @@ class Handler(BaseHTTPRequestHandler):
             return "?"
 
     def _same_origin(self):
-        """Reject a cross-site POST. Browsers omit Origin on some same-origin
-        requests (older Safari), so an absent header is allowed — this is
-        defence in depth behind the SameSite=Lax cookie, not the only guard."""
+        """Check the request origin when the browser provides one.
+
+        Some browsers or embedded web views send Origin: null. Treat that
+        like an omitted Origin, which this local portal already permits for
+        browser compatibility. Normal Origin values must still match Host.
+        """
         origin = self.headers.get("Origin")
-        if not origin:
+        if not origin or origin.strip().lower() == "null":
             return True
+
         host = (self.headers.get("Host") or "").strip()
-        return urlparse(origin).netloc == host
+        parsed = urlparse(origin)
+        return bool(host and parsed.netloc.lower() == host.lower())
 
     def _session_user(self):
         c = SimpleCookie(self.headers.get("Cookie", ""))
@@ -779,6 +799,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/logout":
             self._redirect("/", f"{COOKIE_NAME}=; Path=/; Max-Age=0")
             return
+        if path == "/login":
+            # A GET to /login can happen when a browser repeats a form URL.
+            # Return the browser to the actual page rather than a blank 404.
+            self._redirect("/")
+            return
         if path == "/state":
             # What every open page polls. 401 is the signal to go back to the
             # login screen, which is how a kick lands in seconds.
@@ -815,7 +840,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         if not self._same_origin():
-            self.send_response(403); self.end_headers(); return
+            print(
+                f"Rejected cross-origin POST to {path}: "
+                f"Host={self.headers.get('Host')!r}, "
+                f"Origin={self.headers.get('Origin')!r}",
+                flush=True,
+            )
+            self._html(
+                login_body(
+                    "This request was rejected because its origin did not "
+                    "match the page address. Reload PiTV using the same "
+                    "address and try again."
+                ),
+                code=403,
+            )
+            return
         if not ADMIN and not guest_mode_on():
             self._html(gate_body()); return
 
