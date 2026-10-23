@@ -52,23 +52,23 @@ PORT            = 80 if ADMIN else 8080
 COOKIE_NAME     = "pitv_admin" if ADMIN else "pitv_session"
 
 PITV_DIR        = os.path.expanduser("~/.pitv")
-GUEST_FILE      = os.path.join(PITV_DIR, "guests.json")
-ADMIN_FILE      = os.path.join(PITV_DIR, "admin.json")
-PIN_FILE        = os.path.join(PITV_DIR, "pins.json")
+GUEST_FILE      = "GUEST_ACCOUNTS"
+ADMIN_FILE      = "ADMIN_ACCOUNTS"
+PIN_FILE        = "PLAYER_PINS"
 # Separate signing keys per portal so `screen guest kick all` (which rotates
 # the guest key) can't log admins out. Rotating a key invalidates every
 # session cookie signed with it.
-GUEST_SECRET    = os.path.join(PITV_DIR, "portal-secret")
-ADMIN_SECRET    = os.path.join(PITV_DIR, "admin-secret")
+GUEST_SECRET    = "GUEST_PORTAL_SECRET"
+ADMIN_SECRET    = "ADMIN_PORTAL_SECRET"
 SECRET_FILE     = ADMIN_SECRET if ADMIN else GUEST_SECRET
 GUEST_MODE_FILE = "/tmp/pitv-guest-mode"
-SKY_FILE        = os.path.join(PITV_DIR, "sky.json")
+SKY_FILE        = "SKY_SETTINGS"
 # tv_menu writes the pairing code here; we only ever read it.
-PAIR_FILE       = os.path.join(PITV_DIR, "pairing.json")
+PAIR_FILE       = "PAIRING"
 # Which client addresses may reach the portals at all (`screen network ...`).
 # Empty list = anyone who can route to the Pi, which is the historical
 # behaviour; add a CIDR to shut out, say, a VPN range.
-NETWORK_FILE    = os.path.join(PITV_DIR, "network.json")
+NETWORK_FILE    = "NETWORK_SETTINGS"
 FIFO            = "/tmp/tv_menu.fifo"
 UDP_ADDR        = ("127.0.0.1", 8129)
 # Admin sessions effectively never expire; guest sessions last a week.
