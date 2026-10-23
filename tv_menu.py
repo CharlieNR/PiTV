@@ -13,6 +13,7 @@ import threading
 import time
 
 import pitv_secrets
+import pitv_state
 
 # ─────────────────────────────────────────────────────────────────────
 # OPTIONAL DEPENDENCIES
@@ -71,16 +72,15 @@ def log_clear() -> None:
 
 FREE_GAMES      = set()          # every game requires a PIN
 OTP_MAX_FAILS   = 3
-PIN_FILE        = os.path.expanduser("~/.pitv/pins.json")
-LOCK_STATE_FILE = os.path.expanduser("~/.pitv/lock-state.json")
+PIN_FILE        = "PLAYER_PINS"
+LOCK_STATE_FILE = "LOCK_STATE"
 
 
 def load_pins() -> dict:
     """{name: 6-digit PIN}, read fresh each time so `screen pin` edits apply
     without restarting the menu."""
     try:
-        with open(PIN_FILE) as f:
-            data = json.load(f)
+        data = pitv_state.load_section("PLAYER_PINS", {})
         return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -722,7 +722,7 @@ _CEC_TX_RE = re.compile(r"^tx([ ][0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2})*)+$")
 # (Settings -> Setup -> Preferences) for any of this to land.
 #
 # OFF by default: nothing is sent to the Sky box until `screen sky on`.
-SKY_STATE_FILE  = os.path.expanduser("~/.pitv/sky.json")
+SKY_STATE_FILE  = "SKY_SETTINGS"
 SKY_SRC_LA      = 1        # the Pi — libcec registers as Recorder 1
 SKY_DEFAULT_LA  = 3        # Sky Q as Tuner 1; `screen sky on <la>` overrides
 SKY_INPUT_PHYS  = "10:00"  # Sky on HDMI 1 (matches the `screen change` map)
@@ -749,8 +749,7 @@ SKY_KEYS = {
 def _load_sky() -> dict:
     """Read fresh every time so `screen sky on` applies without a restart."""
     try:
-        with open(SKY_STATE_FILE) as f:
-            d = json.load(f)
+        d = pitv_state.load_section("SKY_SETTINGS", {})
         if isinstance(d, dict):
             return d
     except Exception:
@@ -760,11 +759,9 @@ def _load_sky() -> dict:
 
 def _save_sky(d: dict) -> None:
     try:
-        os.makedirs(os.path.dirname(SKY_STATE_FILE), exist_ok=True)
-        with open(SKY_STATE_FILE, "w") as f:
-            json.dump(d, f)
-    except OSError:
-        pass
+        pitv_state.save_section("SKY_SETTINGS", d)
+    except Exception as exc:
+        log(f"Could not save central Sky settings: {exc}")
 
 
 def _sky_enabled() -> bool:
@@ -863,7 +860,7 @@ def route_remote_key(tok: str) -> None:
 # on: switch Guest Mode off and the code stops being shown and stops being
 # accepted. tv_menu owns it because it owns the screen; guest-portal.py reads
 # the same file to check it.
-PAIR_FILE       = os.path.expanduser("~/.pitv/pairing.json")
+PAIR_FILE       = "PAIRING"
 GUEST_MODE_FILE = "/tmp/pitv-guest-mode"
 PAIR_ROTATE     = 300      # a code is good for 5 minutes
 PAIR_SHOW_SECS  = 30       # how long "show it on the TV" stays up
@@ -883,8 +880,7 @@ def _pair_load() -> dict:
     if now - _pair_cache[0] < 1.0:
         return dict(_pair_cache[1])
     try:
-        with open(PAIR_FILE) as f:
-            d = json.load(f)
+        d = pitv_state.load_section("PAIRING", {})
         if not isinstance(d, dict):
             d = {}
     except Exception:
@@ -896,12 +892,9 @@ def _pair_load() -> dict:
 def _pair_save(d: dict) -> None:
     global _pair_cache
     try:
-        os.makedirs(os.path.dirname(PAIR_FILE), exist_ok=True)
-        with open(PAIR_FILE, "w") as f:
-            json.dump(d, f)
-        os.chmod(PAIR_FILE, 0o600)
-    except OSError:
-        pass
+        pitv_state.save_section("PAIRING", d)
+    except Exception as exc:
+        log(f"Could not save central pairing state: {exc}")
     _pair_cache = (time.time(), dict(d))
 
 
@@ -1100,20 +1093,19 @@ def _save_lock_state():
     the plug reset `hard_locked` to False and the Pi came back to a usable menu.
     Now the state is written whenever it changes and restored at startup."""
     try:
-        os.makedirs(os.path.dirname(LOCK_STATE_FILE), exist_ok=True)
-        with open(LOCK_STATE_FILE, "w") as f:
-            json.dump({"hard": hard_locked, "locked": system_locked}, f)
-        os.chmod(LOCK_STATE_FILE, 0o600)
-    except OSError:
-        pass
+        pitv_state.save_section("LOCK_STATE",
+                                {"hard": hard_locked, "locked": system_locked})
+    except Exception as exc:
+        log(f"Could not save central lock state: {exc}")
 
 
 def _restore_lock_state():
     """Called once at startup: come back up in whatever lock state we left in."""
     global system_locked, current_view
     try:
-        with open(LOCK_STATE_FILE) as f:
-            st = json.load(f)
+        st = pitv_state.load_section("LOCK_STATE", {})
+        if not isinstance(st, dict):
+            return
     except Exception:
         return
     if st.get("hard"):
