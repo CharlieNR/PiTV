@@ -204,7 +204,7 @@ class CommandVerifier:
 
     def maybe_reload(self) -> bool:
         """Re-read the key if the file changed — so `screen control key rotate`
-        (and deploy.sh writing /etc/pitv/control.key for the first time) apply
+        (and creation/rotation of CONTROL_KEY in the central state file) apply
         without restarting the menu. Returns True if the key changed."""
         if self._pinned:
             return False
