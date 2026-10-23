@@ -23,8 +23,10 @@ import os
 import secrets
 import time
 
-PITV_DIR       = os.path.expanduser("~/.pitv")
-EMERGENCY_FILE = os.path.join(PITV_DIR, "emergency-code")
+import pitv_state
+
+PITV_DIR       = os.path.dirname(pitv_state.STATE_FILE)
+EMERGENCY_FILE = pitv_state.STATE_FILE
 
 # The code PiTV shipped with. It sat hardcoded in three files that are in git,
 # so treat it as public: it stays only as the seed for the device-only file, so
@@ -44,10 +46,9 @@ PBKDF2_ITERATIONS = 120_000
 # ── emergency code ───────────────────────────────────────────────────
 def _read_code():
     try:
-        with open(EMERGENCY_FILE) as f:
-            code = f.read().strip()
+        code = pitv_state.read_value("EMERGENCY_PIN")
         return code if _valid_code(code) else None
-    except OSError:
+    except Exception:
         return None
 
 
@@ -56,8 +57,7 @@ def _valid_code(code):
 
 
 def emergency_code() -> str:
-    """The current emergency code. A missing device-only file is seeded with
-    the current public fallback; existing valid per-device codes are retained."""
+    """Read the emergency PIN from the central persistent PiTV state file."""
     code = _read_code()
     if code:
         return code
@@ -70,11 +70,8 @@ def set_emergency_code(code: str) -> bool:
     if not _valid_code(code):
         return False
     try:
-        os.makedirs(PITV_DIR, exist_ok=True)
-        with open(EMERGENCY_FILE, "w") as f:
-            f.write(code + "\n")
-        os.chmod(EMERGENCY_FILE, 0o600)
-    except OSError:
+        pitv_state.write_value("EMERGENCY_PIN", code)
+    except Exception:
         return False
     return True
 
@@ -143,12 +140,10 @@ def verify_password(rec: dict, password: str) -> tuple[bool, bool]:
 # one-shot nonce, so only a sender holding the shared key can drive the TV, and
 # a captured datagram can't be replayed.
 #
-# The key is shared with Homebridge, which runs as a DIFFERENT user, so it
-# lives in /etc/pitv/control.key (group-readable) when that exists; deploy.sh
-# creates it and puts both users in the 'pitv' group. ~/.pitv/control-key is
-# the fallback for everything running as the PiTV user.
-CONTROL_KEY_SYSTEM = "/etc/pitv/control.key"
-CONTROL_KEY_USER   = os.path.join(PITV_DIR, "control-key")
+# The key is one field in the central, private state file. Homebridge obtains
+# only this value through a narrowly permitted helper; it cannot read accounts.
+CONTROL_KEY_SYSTEM = pitv_state.STATE_FILE
+CONTROL_KEY_USER   = pitv_state.STATE_FILE
 CONTROL_PREFIX     = "PITV1"
 # How far a datagram's clock may be from ours. Everything is on one box, so
 # this only needs to cover scheduling jitter.
@@ -156,38 +151,22 @@ CONTROL_MAX_SKEW   = 120
 
 
 def control_key_path() -> str:
-    """Where the shared control key is (or should be) read from."""
-    env = os.environ.get("PITV_CONTROL_KEY_FILE")
-    if env:
-        return env
-    if os.path.exists(CONTROL_KEY_SYSTEM):
-        return CONTROL_KEY_SYSTEM
-    return CONTROL_KEY_USER
+    """Path to the central PiTV state file containing CONTROL_KEY."""
+    return pitv_state.STATE_FILE
 
 
 def control_key() -> bytes:
-    """The shared key, creating a user-level one the first time. Returns b"" if
-    it can't be read AND can't be created — callers treat that as 'no auth
-    possible' and say so loudly rather than silently accepting anything."""
-    path = control_key_path()
+    """Return CONTROL_KEY from the single persistent state file, creating it
+    only when the state file exists but has no key field yet."""
     try:
-        with open(path) as f:
-            key = f.read().strip()
-        if key:
+        key = pitv_state.read_value("CONTROL_KEY", "")
+        if isinstance(key, str) and key:
             return key.encode()
-    except OSError:
-        pass
-    if path != CONTROL_KEY_USER:
-        return b""                      # a system key we can't read: don't mint one
-    key = secrets.token_hex(32)
-    try:
-        os.makedirs(PITV_DIR, exist_ok=True)
-        with open(path, "w") as f:
-            f.write(key + "\n")
-        os.chmod(path, 0o600)
-    except OSError:
+        key = secrets.token_hex(32)
+        pitv_state.write_value("CONTROL_KEY", key)
+        return key.encode()
+    except Exception:
         return b""
-    return key.encode()
 
 
 def key_fingerprint(key: bytes) -> str:
