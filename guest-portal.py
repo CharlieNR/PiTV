@@ -27,6 +27,7 @@ Actuation:
 """
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import html
@@ -96,6 +97,14 @@ FAIL_WINDOW     = 15 * 60
 LOCK_BASE       = 30
 LOCK_CEILING    = 15 * 60
 MAX_BODY        = 8192        # a login form is a few hundred bytes
+
+# A single local keyboard lease shared by the admin and guest portal processes.
+# The lock lives in ~/.pitv (mode 0700); its data contains only a random lease
+# token and an opaque hash of the signed-in session cookie.
+KEYBOARD_LEASE_PATH = os.path.join(PITV_DIR, "remote-keyboard-lease.json")
+KEYBOARD_GUARD_PATH = os.path.join(PITV_DIR, "remote-keyboard-lease.lock")
+KEYBOARD_LEASE_SECONDS = 90
+KEYBOARD_MAX_CHARS = 120
 
 NAV = {"up": "UP", "down": "DOWN", "left": "LEFT", "right": "RIGHT",
        "ok": "SELECT", "back": "BACK"}
@@ -455,10 +464,88 @@ def address_allowed(ip):
 def write_fifo(token):
     try:
         fd = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)
-        os.write(fd, (token + "\n").encode())
-        os.close(fd)
+        try:
+            os.write(fd, (token + "\n").encode())
+        finally:
+            os.close(fd)
+        return True
     except Exception:
-        pass
+        return False
+
+
+@contextmanager
+def _keyboard_lease_guard():
+    """Serialise lease access across the separate guest/admin HTTP processes."""
+    os.makedirs(PITV_DIR, mode=0o700, exist_ok=True)
+    fd = os.open(KEYBOARD_GUARD_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _write_keyboard_lease_locked(lease):
+    """Write only while _keyboard_lease_guard() is held."""
+    if lease is None:
+        try:
+            os.unlink(KEYBOARD_LEASE_PATH)
+        except FileNotFoundError:
+            pass
+        return
+    tmp = KEYBOARD_LEASE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(lease, f, separators=(",", ":"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, KEYBOARD_LEASE_PATH)
+    os.chmod(KEYBOARD_LEASE_PATH, 0o600)
+
+
+def _read_keyboard_lease_locked():
+    """Read/expire a lease only while _keyboard_lease_guard() is held."""
+    try:
+        with open(KEYBOARD_LEASE_PATH, encoding="utf-8") as f:
+            lease = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(lease, dict):
+        _write_keyboard_lease_locked(None)
+        return None
+    now = time.time()
+    try:
+        expired = float(lease.get("expires_at", 0)) <= now
+    except (TypeError, ValueError):
+        expired = True
+    # If Guest Mode is turned off or guests are locked, a guest's lease should
+    # not hold the shared keyboard until the timeout.
+    guest_blocked = (not bool(lease.get("owner_admin"))
+                     and (not guest_mode_on() or guest_locked()))
+    if expired or guest_blocked:
+        _write_keyboard_lease_locked(None)
+        return None
+    return lease
+
+
+def keyboard_lease_status(session_id):
+    with _keyboard_lease_guard():
+        lease = _read_keyboard_lease_locked()
+        if not lease:
+            return {"keyboard_busy": False, "keyboard_mine": False,
+                    "keyboard_expires_in": 0}
+        mine = bool(session_id and hmac.compare_digest(
+            str(lease.get("session_hash", "")), str(session_id)))
+        return {
+            "keyboard_busy": True,
+            "keyboard_mine": mine,
+            "keyboard_expires_in": max(
+                0, int(float(lease.get("expires_at", 0)) - time.time())),
+        }
 
 
 def set_guest_mode(on):
@@ -494,6 +581,15 @@ background:#0b0f1a;color:#fff;margin:6px 0}}
 .on{{background:#1f7a3f}}.off{{background:#7a2a2a}}
 .lockbar{{position:sticky;bottom:0;background:#7a2a2a;color:#fff;padding:10px;
 border-radius:10px;margin:10px 0;font-size:15px}}
+.modal{{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.82);display:flex;
+align-items:center;justify-content:center;padding:16px}}
+.modal[hidden]{{display:none!important}}
+.modal-card{{width:100%;max-width:420px;max-height:90vh;overflow:auto;background:#151b2b;
+border:1px solid #37415c;border-radius:16px;padding:18px;text-align:left;
+box-shadow:0 20px 80px #000}}
+.modal-card h2{{margin-top:0;text-align:center}}
+.modal-card .muted{{line-height:1.45}}
+.modal-card .row{{margin-top:8px}}
 body.locked .card button{{opacity:.35;pointer-events:none;filter:grayscale(1)}}
 a{{color:#7fd1ff}}
 </style></head><body><div class=wrap>{body}</div></body></html>"""
@@ -609,16 +705,147 @@ def controls_body(username):
   <button onclick="act('right')">&#9654;</button>
   <button onclick="act('back')">Back</button><button onclick="act('down')">&#9660;</button>
   <span class="sp"></span></div></div>
+<div class=card><p class=muted>Type into a running PiTV game</p>
+  <p class=muted>Use your phone's keyboard. Only one signed-in browser can type at a time.</p>
+  <button onclick="openKeyboard()">Use phone keyboard</button></div>
 <p class=muted><a href="/logout">Sign out</a></p>
 <div id=lockbar class=lockbar hidden>The host has paused the controls.</div>
+<div id=keyboardbar class=lockbar hidden>Someone else has exclusive TV input access. Navigation is temporarily paused.</div>
+<div class=modal id=keyboardModal hidden>
+  <div class=modal-card role=dialog aria-modal=true aria-labelledby=keyboardTitle>
+    <h2 id=keyboardTitle>Type into PiTV</h2>
+    <p class=muted id=keyboardStatus>Would you like to use your phone's keyboard to type into the currently running PiTV game?</p>
+    <div id=keyboardConfirm>
+      <p class=muted>Only one person can hold keyboard access. Other users' keyboard and navigation input will be rejected until it is released or expires after inactivity.</p>
+      <button id=keyboardClaim onclick="claimKeyboard()">Yes, use keyboard</button>
+    </div>
+    <div id=keyboardEntry hidden>
+      <input id=keyboardText type=text maxlength=120 autocomplete=off autocapitalize=off spellcheck=false
+        placeholder="Type letters, numbers or punctuation"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();sendKeyboardText()}">
+      <div class=row><button onclick="sendKeyboardText()">Send text</button><button onclick="sendKeyboardKey('SPACE')">Space</button></div>
+      <div class=row><button onclick="sendKeyboardKey('ENTER')">Enter</button><button onclick="sendKeyboardKey('BKSP')">Backspace</button></div>
+      <div class=row><button onclick="sendKeyboardKey('TAB')">Tab</button><button onclick="sendKeyboardKey('ESC')">Escape</button></div>
+      <button onclick="releaseKeyboard()">Done — release access</button>
+    </div>
+    <button onclick="closeKeyboard()">Close</button>
+  </div>
+</div>
 <script>
 var ADMIN = %ADMIN%, POLL = %POLL%;
+var keyboardToken = "";
 function act(a){
   if(document.body.classList.contains('locked') && !ADMIN) return;
   fetch('/action',{method:'POST',
     headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'action='+a}).then(function(r){ if(r.status==423) sync(); });
+    body:new URLSearchParams({action:a})}).then(function(r){
+      if(r.status===423){sync();}
+    });
 }
+function renderKeyboardModal(){
+  var modal=document.getElementById('keyboardModal');
+  if(!modal || modal.hidden) return;
+  var status=document.getElementById('keyboardStatus');
+  var confirmBox=document.getElementById('keyboardConfirm');
+  var entryBox=document.getElementById('keyboardEntry');
+  var claim=document.getElementById('keyboardClaim');
+  if(keyboardToken){
+    status.textContent='You have exclusive access. Make sure a PiTV game that accepts keyboard input is running, then type and send your text.';
+    confirmBox.hidden=true; entryBox.hidden=false; claim.disabled=false;
+  } else if(state && state.keyboard_busy && !state.keyboard_mine){
+    status.textContent='Someone else is using the TV keyboard. You cannot type or navigate while they hold it. Try again when they finish.';
+    confirmBox.hidden=false; entryBox.hidden=true; claim.disabled=true;
+  } else {
+    status.textContent='Would you like to use your phone keyboard to type into the currently running PiTV game?';
+    confirmBox.hidden=false; entryBox.hidden=true; claim.disabled=false;
+  }
+}
+function openKeyboard(){
+  document.getElementById('keyboardModal').hidden=false;
+  renderKeyboardModal();
+  sync();
+}
+function claimKeyboard(){
+  var claim=document.getElementById('keyboardClaim');
+  claim.disabled=true;
+  document.getElementById('keyboardStatus').textContent='Requesting exclusive keyboard access…';
+  fetch('/keyboard/claim',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},body:''})
+    .then(function(r){return r.json().catch(function(){return {}}).then(function(j){return {r:r,j:j};});})
+    .then(function(result){
+      if(!result.r.ok){
+        if(state){state.keyboard_busy=!!result.j.keyboard_busy;state.keyboard_mine=false;}
+        renderKeyboardModal();
+        if(result.r.status===423){
+          document.getElementById('keyboardStatus').textContent='Guest controls are currently locked by the administrator.';
+        } else if(result.r.status===409){
+          document.getElementById('keyboardStatus').textContent='Someone else claimed the keyboard first. Their input has priority; try again when it is free.';
+        } else {
+          document.getElementById('keyboardStatus').textContent='Could not claim keyboard access. Please try again.';
+        }
+        return;
+      }
+      keyboardToken=result.j.token||'';
+      if(state){state.keyboard_busy=true;state.keyboard_mine=true;}
+      renderKeyboardModal();
+      var field=document.getElementById('keyboardText');
+      field.value='';
+      field.focus(); // opens the phone's normal on-screen keyboard
+    }).catch(function(){
+      claim.disabled=false;
+      document.getElementById('keyboardStatus').textContent='Could not contact PiTV. Please try again.';
+    });
+}
+function keyboardRequest(fields){
+  fields.token=keyboardToken;
+  return fetch('/keyboard/type',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams(fields)});
+}
+function keyboardRequestFailed(r){
+  if(r.status===409 || r.status===423){
+    keyboardToken='';
+    sync();
+    document.getElementById('keyboardStatus').textContent=
+      r.status===423 ? 'Guest controls are locked.' : 'Keyboard access expired. Claim it again to continue.';
+    renderKeyboardModal();
+  } else {
+    document.getElementById('keyboardStatus').textContent='Could not send input. Check that the game is still running.';
+  }
+}
+function sendKeyboardText(){
+  var field=document.getElementById('keyboardText');
+  var value=field.value;
+  if(!value) return;
+  keyboardRequest({text:value}).then(function(r){
+    if(!r.ok){keyboardRequestFailed(r);return;}
+    field.value='';field.focus();
+  }).catch(function(){
+    document.getElementById('keyboardStatus').textContent='Could not contact PiTV.';
+  });
+}
+function sendKeyboardKey(key){
+  keyboardRequest({key:key}).then(function(r){
+    if(!r.ok){keyboardRequestFailed(r);return;}
+    document.getElementById('keyboardText').focus();
+  }).catch(function(){
+    document.getElementById('keyboardStatus').textContent='Could not contact PiTV.';
+  });
+}
+function releaseKeyboard(){
+  var token=keyboardToken;
+  keyboardToken='';
+  if(state){state.keyboard_busy=false;state.keyboard_mine=false;}
+  document.getElementById('keyboardModal').hidden=true;
+  if(token){
+    fetch('/keyboard/release',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({token:token})}).then(function(){sync();}).catch(function(){sync();});
+  } else {
+    sync();
+  }
+}
+function closeKeyboard(){releaseKeyboard();}
 // Poll so a kick, a lock, Guest Mode going off or a rotated PIN lands within
 // seconds — nobody has to know to pull-to-refresh.
 var state = null;
@@ -636,6 +863,9 @@ function apply(s){
   if(gm) gm.textContent = s.guest_mode ? 'ON' : 'OFF';
   var lk = document.getElementById('lkstate');
   if(lk) lk.textContent = s.locked ? 'LOCKED' : 'unlocked';
+  var kb = document.getElementById('keyboardbar');
+  if(kb) kb.hidden = !(s.keyboard_busy && !s.keyboard_mine);
+  renderKeyboardModal();
 }
 function sync(){
   fetch('/state',{headers:{'Accept':'application/json'}}).then(function(r){
@@ -737,6 +967,15 @@ class Handler(BaseHTTPRequestHandler):
             return verify_half(c[COOKIE_NAME].value)
         return None
 
+    def _keyboard_session_id(self):
+        """Opaque identity for this browser session; never store the cookie itself."""
+        c = SimpleCookie(self.headers.get("Cookie", ""))
+        if COOKIE_NAME not in c:
+            return None
+        return hashlib.sha256(
+            (COOKIE_NAME + ":" + c[COOKIE_NAME].value).encode("utf-8")
+        ).hexdigest()
+
     def _json(self, obj, code=200):
         data = json.dumps(obj).encode()
         self.send_response(code)
@@ -796,12 +1035,14 @@ class Handler(BaseHTTPRequestHandler):
             if not user or (not ADMIN and not guest_mode_on()):
                 self._json({"ok": False}, code=401)
                 return
+            keyboard = keyboard_lease_status(self._keyboard_session_id())
             self._json({
                 "ok":         True,
                 "guest_mode": guest_mode_on(),
                 "locked":     guest_locked(),
                 "sky":        sky_on(),
                 "pin":        str(guest_pin(user)),
+                **keyboard,
             })
             return
         if path != "/":
@@ -914,8 +1155,113 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(204); self.end_headers()
             return
 
+        if path.startswith("/keyboard/"):
+            user = self._session_user()
+            if not user or (not ADMIN and not guest_mode_on()):
+                self._json({"ok": False, "error": "not_signed_in"}, code=401)
+                return
+            if not ADMIN and guest_locked():
+                self._json({"ok": False, "error": "guest_controls_locked"}, code=423)
+                return
+            session_id = self._keyboard_session_id()
+            if not session_id:
+                self._json({"ok": False, "error": "no_session"}, code=401)
+                return
+
+            if path == "/keyboard/claim":
+                with _keyboard_lease_guard():
+                    lease = _read_keyboard_lease_locked()
+                    if lease and not hmac.compare_digest(
+                            str(lease.get("session_hash", "")), session_id):
+                        remaining = max(0, int(float(lease.get("expires_at", 0)) - time.time()))
+                        self._json({
+                            "ok": False, "keyboard_busy": True,
+                            "keyboard_mine": False, "keyboard_expires_in": remaining,
+                        }, code=409)
+                        return
+                    token = (lease.get("token") if lease else None) or secrets.token_urlsafe(24)
+                    lease = {
+                        "session_hash": session_id,
+                        "token": token,
+                        "owner_admin": bool(ADMIN),
+                        "expires_at": time.time() + KEYBOARD_LEASE_SECONDS,
+                    }
+                    _write_keyboard_lease_locked(lease)
+                self._json({"ok": True, "token": token,
+                            "expires_in": KEYBOARD_LEASE_SECONDS})
+                return
+
+            b = self._body()
+            if b is None:
+                self._json({"ok": False, "error": "bad_request"}, code=413)
+                return
+            token = b.get("token", "")
+            if path == "/keyboard/release":
+                with _keyboard_lease_guard():
+                    lease = _read_keyboard_lease_locked()
+                    if lease and hmac.compare_digest(
+                            str(lease.get("session_hash", "")), session_id) and hmac.compare_digest(
+                            str(lease.get("token", "")), token):
+                        _write_keyboard_lease_locked(None)
+                self.send_response(204); self.end_headers()
+                return
+
+            if path == "/keyboard/type":
+                text_value = b.get("text")
+                key_value = b.get("key")
+                if (text_value is None) == (key_value is None):
+                    self._json({"ok": False, "error": "provide_text_or_key"}, code=400)
+                    return
+                if text_value is not None:
+                    if (not text_value or len(text_value) > KEYBOARD_MAX_CHARS
+                            or any(ord(ch) < 32 or ord(ch) > 126 for ch in text_value)):
+                        self._json({"ok": False,
+                                    "error": "text_must_be_printable_ascii_under_121_chars"},
+                                   code=400)
+                        return
+                    fifo_command = "TYPE " + text_value
+                else:
+                    special = {"SPACE": "SPACE", "ENTER": "TYPE_KEY ENTER",
+                               "BKSP": "TYPE_KEY BKSP", "TAB": "TYPE_KEY TAB",
+                               "ESC": "TYPE_KEY ESC"}
+                    if key_value not in special:
+                        self._json({"ok": False, "error": "unsupported_key"}, code=400)
+                        return
+                    fifo_command = special[key_value]
+
+                with _keyboard_lease_guard():
+                    lease = _read_keyboard_lease_locked()
+                    valid = bool(
+                        lease
+                        and hmac.compare_digest(str(lease.get("session_hash", "")), session_id)
+                        and hmac.compare_digest(str(lease.get("token", "")), token)
+                    )
+                    if not valid:
+                        keyboard = keyboard_lease_status(session_id) if False else {
+                            "keyboard_busy": bool(lease),
+                            "keyboard_mine": False,
+                        }
+                        self._json({
+                            "ok": False,
+                            "error": "keyboard_lease_expired_or_owned_by_another_user",
+                            **keyboard,
+                        }, code=409)
+                        return
+                    lease["expires_at"] = time.time() + KEYBOARD_LEASE_SECONDS
+                    _write_keyboard_lease_locked(lease)
+                    sent = write_fifo(fifo_command)
+                if not sent:
+                    self._json({"ok": False, "error": "pitv_menu_unavailable"}, code=503)
+                else:
+                    self.send_response(204); self.end_headers()
+                return
+
+            self._json({"ok": False, "error": "not_found"}, code=404)
+            return
+
         if path == "/action":
-            if not self._session_user():
+            user = self._session_user()
+            if not user:
                 self.send_response(403); self.end_headers(); return
             if not ADMIN and guest_locked():
                 # 423 Locked — the page greys itself out, but the server is
@@ -925,6 +1271,13 @@ class Handler(BaseHTTPRequestHandler):
             if b is None:
                 self.send_response(413); self.end_headers(); return
             action = b.get("action", "")
+            # While somebody owns the shared TV keyboard, reject competing web
+            # navigation. Power and administrator safety controls remain usable.
+            if action in (set(NAV) | set(SKY_ACTIONS) | {"input_sky", "input_pitv"}):
+                keyboard = keyboard_lease_status(self._keyboard_session_id())
+                if keyboard["keyboard_busy"] and not keyboard["keyboard_mine"]:
+                    self._json({"ok": False, "error": "keyboard_in_use"}, code=423)
+                    return
             if action in NAV:
                 write_fifo(NAV[action])
             elif action in UDP:
