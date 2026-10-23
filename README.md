@@ -261,9 +261,9 @@ Start with `screen sky status`. Enable it only when you want to test it; use `sc
 
 ## Troubleshooting and fixes
 
-### Login page goes white or says the request origin did not match
+### Login page goes white or does not sign in
 
-Some browsers or embedded web views submit a form with the HTTP header `Origin: null`. The current `experimental` branch handles that browser value like a missing Origin header, while still checking ordinary Origin values. It also avoids a blank page if the browser requests `/login` directly and provides an HTML fallback for redirects.
+An older version can show a blank page instead of returning to the login form in some browsers. The compatibility fix is included in the current `experimental` branch.
 
 To install the fix:
 
@@ -379,13 +379,3 @@ Not immediately. First cold-boot the new card more than once and check TV contro
 
 The source code can be cloned again, but personal settings, accounts, codes and local Homebridge configuration may exist only on the old card. Before repurposing it, securely back up anything you need, verify the new card after several cold boots, and keep the old card as a rollback until you're satisfied. Never upload private configuration or credentials to the repository.
 
-## Main project files
-
-- `tv_menu.py` — on-screen menu and TV controls.
-- `screen` — terminal command interface.
-- `guest-portal.py` — admin and guest pages.
-- `guest-admin.py` and `pin-admin.py` — account and PIN management.
-- `pitv_secrets.py` — password and emergency-code helpers.
-- `homebridge-pitv-tv/` — optional Homebridge plugin.
-- `deploy.sh` — installation and updates.
-- `setup-input.sh` — optional controller setup.
