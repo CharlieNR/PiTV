@@ -29,7 +29,7 @@ except ImportError:
     EVDEV_OK = False
 
 # ChronosVer: vYYYY.MAJOR.MINOR.BUG
-VERSION = "v2026.2.3.16"
+VERSION = "v2026.2.3.17"
 
 # ─────────────────────────────────────────────────────────────────────
 # LOG SYSTEM
@@ -1104,18 +1104,37 @@ def _imposter_local_ip() -> str:
 
 
 def _imposter_qr_matrix(url):
+    """Return a standards-compliant QR module matrix using Python's qrcode library.
+
+    The matrix contains the four-module quiet zone required around a QR code.
+    It is rendered directly by curses; no terminal-art output is parsed.
+    """
     try:
-        r=subprocess.run(["qrencode","-t","ASCII","-m","4",url],capture_output=True,text=True,timeout=2,check=False)
-        if r.returncode: return None
-        lines=r.stdout.splitlines()
-        if not lines: return None
-        width=max(map(len,lines))
-        if width<10: return None
-        if width%2: width+=1
-        rows=[[line.ljust(width)[i:i+2]=="##" for i in range(0,width,2)] for line in lines]
-        cols=max(map(len,rows))
-        return [row+[False]*(cols-len(row)) for row in rows]
-    except (OSError,subprocess.SubprocessError): return None
+        import qrcode
+        from qrcode.constants import ERROR_CORRECT_M
+
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=ERROR_CORRECT_M,
+            box_size=1,
+            border=4,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+
+        # Reject malformed/non-square results rather than showing a misleading
+        # QR-like pattern that a phone camera cannot decode.
+        if not matrix or len(matrix) < 29 or any(len(row) != len(matrix) for row in matrix):
+            log("Imposter QR generator returned an invalid matrix")
+            return None
+        return [[bool(module) for module in row] for row in matrix]
+    except ImportError as e:
+        log(f"Python qrcode module unavailable: {e}")
+        return None
+    except Exception as e:
+        log(f"Imposter QR generation failed: {e}")
+        return None
 
 
 def _imposter_center(stdscr,y,text,attr=0):
