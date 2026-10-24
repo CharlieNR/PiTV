@@ -189,7 +189,8 @@ def display_prepared_frame(prepared: dict[str, Any], device: str = "/dev/fb0") -
             flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE,
         ) as mapped:
             current_y = info["yoffset"]
-            if info["virtual_height"] >= 2 * height:
+            if (info["virtual_height"] >= 2 * height
+                    and info["memory_length"] >= 2 * height * line_length):
                 back_y = 0 if current_y >= height else height
                 back_start = back_y * line_length
                 mapped[back_start:back_start + len(frame)] = frame
