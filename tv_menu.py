@@ -4083,7 +4083,7 @@ def main(stdscr):
                 if UI_VERSION == "2":
                     if cmd in ("UP", "DOWN", "LEFT", "RIGHT"):
                         selected_art_idx = _modern_grid_move(
-                            selected_art_idx, cmd, len(ART_OPTIONS), _modern_columns(max_x, 4))
+                            selected_art_idx, cmd, len(ART_OPTIONS), _modern_columns(max_x, 5))
                     elif cmd == "SELECT":
                         _activate_home_selection(stdscr)
                     elif cmd == "BACK":
@@ -4179,7 +4179,7 @@ def main(stdscr):
                 if UI_VERSION == "2":
                     if cmd in ("UP", "DOWN", "LEFT", "RIGHT"):
                         selected_game_idx = _modern_grid_move(
-                            selected_game_idx, cmd, len(GAME_OPTIONS), _modern_columns(max_x, 4))
+                            selected_game_idx, cmd, len(GAME_OPTIONS), _modern_columns(max_x, 5))
                     elif cmd == "BACK":
                         current_view = "MENU"
                     elif cmd == "SELECT":
