@@ -2355,17 +2355,18 @@ def run_external_art(stdscr, art_entry, duration):
 
     start      = time.time()
     stop_event = threading.Event()
-    user_requested_exit = threading.Event()
+    intentional_exit = threading.Event()
 
     def _monitor():
         while not stop_event.is_set():
             if duration and (time.time() - start >= duration):
+                intentional_exit.set()
                 proc.terminate(); return
             if input_queue:
                 peek = input_queue[0]
                 if peek in ("BACK","SELECT","CLEAR","HOME") or (
                         isinstance(peek, tuple) and peek[0] == "DIRECT_RUN"):
-                    user_requested_exit.set()
+                    intentional_exit.set()
                     proc.terminate(); return
             if proc.poll() is not None:
                 return
@@ -2382,7 +2383,7 @@ def run_external_art(stdscr, art_entry, duration):
 
     log(f"Art stop: {requested_binary} (exit={exit_code}, runtime={elapsed:.2f}s)")
     curses.reset_prog_mode(); curses.curs_set(0)
-    if exit_code not in (0, -15, -9, 143) and not user_requested_exit.is_set():
+    if exit_code not in (0, -15, -9, 143) and not intentional_exit.is_set():
         show_message(stdscr, [
             "ART PROGRAM EXITED WITH AN ERROR",
             f"{requested_binary} returned status {exit_code}.",
