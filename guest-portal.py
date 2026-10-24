@@ -830,7 +830,7 @@ def imposter_join_body(game_id):
  var authBox=document.getElementById('imposterAuth'),playBox=document.getElementById('imposterPlay');
  var content=document.getElementById('imposterContent'),heading=document.getElementById('imposterHeading');
  var sub=document.getElementById('imposterSubheading'),authError=document.getElementById('imposterAuthError');
- var lastRenderKey='',voteMessage='';
+ var lastRenderKey='',voteMessage='',wordSubmitting=false,polling=false,stateRevision=0;
  function el(tag,text,cls){var n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;}
  function api(path,fields){return fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
   body:new URLSearchParams(Object.assign({game_id:gameId,token:token},fields||{}))});}
@@ -873,11 +873,33 @@ def imposter_join_body(game_id):
      content.appendChild(el('p','Choose one word, then tap Enter to show it to every non-imposter.','imposter-note'));
      var form=el('form');form.id='imposterWordForm';var inp=el('input');inp.id='imposterWord';inp.maxLength=40;inp.placeholder='Choose a word';inp.required=true;
      var btn=el('button','Enter');btn.type='submit';form.appendChild(inp);form.appendChild(btn);
-     form.addEventListener('submit',function(e){e.preventDefault();btn.disabled=true;
-      api('/imposter/word',{word:inp.value}).then(function(r){return r.json().then(function(j){return {r:r,j:j};});})
-       .then(function(x){if(!x.r.ok){btn.disabled=false;voteMessage='Could not set the word. Try again.';return;}voteMessage='Word accepted.';poll();})
-       .catch(function(){btn.disabled=false;voteMessage='Could not contact PiTV.';});});
-     content.appendChild(form);
+     var wordStatus=el('p','','muted');wordStatus.id='imposterWordStatus';wordStatus.setAttribute('aria-live','polite');
+     form.addEventListener('submit',function(e){
+      e.preventDefault();
+      if(wordSubmitting)return;
+      var word=inp.value.trim();
+      if(!word){wordStatus.textContent='Enter a word first.';inp.focus();return;}
+      wordSubmitting=true;stateRevision++;btn.disabled=true;
+      wordStatus.textContent='Sending word to PiTV…';
+      api('/imposter/word',{word:word})
+       .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+       .then(function(x){
+        if(!x.r.ok||!x.j.ok){
+         var messages={invalid_word:'Enter a word of 1–40 characters.',
+          not_word_chooser:'Only the selected word chooser can submit the word.',
+          invalid_game_session:'Your session expired. Reload this page and join again.'};
+         wordStatus.textContent=messages[x.j.error]||('PiTV could not accept the word (HTTP '+x.r.status+'). Try again.');
+         wordSubmitting=false;btn.disabled=false;inp.focus();return;
+        }
+        wordStatus.textContent='Word accepted. Moving to the round…';
+        wordSubmitting=false;stateRevision++;poll();
+       })
+       .catch(function(){
+        wordStatus.textContent='Could not contact PiTV. Check the Wi-Fi connection and try again.';
+        wordSubmitting=false;btn.disabled=false;
+       });
+     });
+     content.appendChild(form);content.appendChild(wordStatus);
     }else{
      content.appendChild(el('div','YOU ARE A PLAYER','imposter-role good'));
      content.appendChild(el('p','Waiting for the word to be chosen. Keep your role secret.','imposter-note'));
@@ -931,9 +953,16 @@ def imposter_join_body(game_id):
   }
  }
  function poll(){
-  if(!token)return;
-  api('/imposter/state',{}).then(function(r){if(!r.ok){token='';sessionStorage.removeItem(storageKey);showAuth('Your game session expired. Enter your PIN again.');return null;}return r.json();})
-   .then(function(s){if(s)render(s);}).catch(function(){});
+  if(!token||polling||wordSubmitting)return;
+  polling=true;
+  var revision=stateRevision;
+  api('/imposter/state',{}).then(function(r){
+   if(!r.ok){token='';sessionStorage.removeItem(storageKey);showAuth('Your game session expired. Enter your PIN again.');return null;}
+   return r.json();
+  }).then(function(s){
+   // Drop stale responses, especially polls that began before word submission.
+   if(s&&!wordSubmitting&&revision===stateRevision)render(s);
+  }).catch(function(){}).then(function(){polling=false;});
  }
  document.getElementById('imposterPinForm').addEventListener('submit',authenticate);
  if(token)poll();else showAuth('');
