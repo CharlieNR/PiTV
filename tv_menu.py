@@ -20,6 +20,16 @@ import pitv_framebuffer
 import pitv_pins
 
 try:
+    import pitv_tvui
+    GRAPHIC_UI_AVAILABLE = True
+    GRAPHIC_UI_IMPORT_ERROR = ""
+except Exception as _graphic_ui_import_exc:
+    pitv_tvui = None
+    GRAPHIC_UI_AVAILABLE = False
+    GRAPHIC_UI_IMPORT_ERROR = str(_graphic_ui_import_exc)
+_GRAPHIC_UI_FAILED = False
+
+try:
     UI_VERSION = str(pitv_state.read_value("UI_VERSION", "1")).strip()
 except Exception:
     UI_VERSION = "1"
@@ -72,6 +82,8 @@ def log_clear() -> None:
 
 
 log(f"Interface version {UI_VERSION} loaded")
+if UI_VERSION == "2" and not GRAPHIC_UI_AVAILABLE:
+    log(f"Graphical interface unavailable; using text fallback: {GRAPHIC_UI_IMPORT_ERROR}")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -4263,83 +4275,201 @@ def main(stdscr):
         _publish_pin_entry_state()
 
         # ── Render ──────────────────────────────────────────────────
-        if current_view in ("MENU","DURATION_SELECT","GAMES_MENU","CLEAR","FAKE_OFF",
-                             "LOCKED","TTT_MODE","IMPOSTER_COUNT"):
-            stdscr.erase()
-
-        if hard_locked:
-            draw_hardlock(stdscr)
-
-        elif system_locked or current_view == "LOCKED":
-            draw_keypad(stdscr, "", lock_entered, lock_error, is_lock=True)
-
-        elif current_view == "MENU":
-            draw_main_menu(stdscr, selected_art_idx)
-            draw_log_panel(stdscr)
-
-        elif current_view == "DURATION_SELECT":
-            draw_duration_menu(stdscr, ART_OPTIONS[selected_art_idx][0], selected_dur_idx)
-            draw_log_panel(stdscr)
-
-        elif current_view == "GAMES_MENU":
-            draw_games_menu(stdscr, selected_game_idx)
-            draw_log_panel(stdscr)
-
-        elif current_view == "IMPOSTER_COUNT":
-            draw_imposter_count(
-                stdscr,
-                imposter_count_options[imposter_count_selected],
-                imposter_count_options[-1],
+        modern_graphic_mode = (
+            UI_VERSION == "2"
+            and GRAPHIC_UI_AVAILABLE
+            and not _GRAPHIC_UI_FAILED
+            and (
+                hard_locked or system_locked
+                or current_view in (
+                    "MENU", "DURATION_SELECT", "GAMES_MENU", "TTT_MODE",
+                    "IMPOSTER_COUNT", "KEYPAD", "LOCKED", "CLEAR", "FAKE_OFF"
+                )
             )
+        )
+        graphic_overlay = None
 
-        elif current_view == "TTT_MODE":
-            if UI_VERSION == "2":
-                draw_ttt_mode(stdscr)
-            else:
-                _draw_card_list(stdscr, ["1 PLAYER  (vs Computer)", "2 PLAYER"],
-                                ttt_sel, title="NOUGHTS & CROSSES",
-                                subtitle="  A/Right: choose    B/Left: back",
-                                color=curses.color_pair(5))
+        # The graphic renderer owns all version-2 menu screens. Keep curses
+        # input/navigation intact, but do not draw terminal text over the PNG.
+        if modern_graphic_mode:
+            if current_view != "FAKE_OFF":
+                if player_pin_showing():
+                    with _pin_display_lock:
+                        _graphic_pin = dict(_pin_display_state)
+                    _graphic_left = float(_graphic_pin.get("until", 0)) - time.time()
+                    if _graphic_left > 0:
+                        graphic_overlay = {
+                            "type": "player_pin",
+                            "name": str(_graphic_pin.get("name", "")),
+                            "pin": str(_graphic_pin.get("pin", "")),
+                            "seconds": max(1, int(_graphic_left + 0.999)),
+                        }
+                elif pair_showing():
+                    _graphic_pair = _pair_load()
+                    _graphic_until = float(_graphic_pair.get("show_until", 0))
+                    graphic_overlay = {
+                        "type": "pair",
+                        "code": pair_code(),
+                        "seconds": max(1, int(_graphic_until - time.time() + 0.999)),
+                    }
+                else:
+                    pair_restore_input()
+        else:
+            if current_view in ("MENU","DURATION_SELECT","GAMES_MENU","CLEAR","FAKE_OFF",
+                                 "LOCKED","TTT_MODE","IMPOSTER_COUNT"):
+                stdscr.erase()
 
-        elif current_view == "KEYPAD":
-            name = GAME_OPTIONS[selected_game_idx][0]
-            if pending_game_key == "IMPOSTER":
-                name += f" — PLAYER {imposter_pin_stage}"
-            else:
-                _kp_2p = ((pending_game_key == "TICTACTOE" and ttt_mode == "2P")
-                          or (pending_game_key != "TICTACTOE" and pending_game_2p))
-                if _kp_2p:
-                    name += f" — PLAYER {ttt_stage}"
-            draw_keypad(stdscr, name, keypad_entered, keypad_error)
+            if hard_locked:
+                draw_hardlock(stdscr)
 
-        elif current_view == "ART_RUNNING":
-            if should_clear_screen:
-                stdscr.clear(); should_clear_screen = False
-            active_art_type(stdscr, frame)
-            status = (f" {int(art_stop_time-time.time())}s remaining | BACK to exit "
-                      if art_stop_time else " Running indefinitely | BACK to exit ")
-            try:
-                stdscr.addstr(max_y-1, 0, status.center(max_x-1),
-                              curses.A_REVERSE|curses.A_DIM)
-            except curses.error:
+            elif system_locked or current_view == "LOCKED":
+                draw_keypad(stdscr, "", lock_entered, lock_error, is_lock=True)
+
+            elif current_view == "MENU":
+                draw_main_menu(stdscr, selected_art_idx)
+                draw_log_panel(stdscr)
+
+            elif current_view == "DURATION_SELECT":
+                draw_duration_menu(stdscr, ART_OPTIONS[selected_art_idx][0], selected_dur_idx)
+                draw_log_panel(stdscr)
+
+            elif current_view == "GAMES_MENU":
+                draw_games_menu(stdscr, selected_game_idx)
+                draw_log_panel(stdscr)
+
+            elif current_view == "IMPOSTER_COUNT":
+                draw_imposter_count(
+                    stdscr,
+                    imposter_count_options[imposter_count_selected],
+                    imposter_count_options[-1],
+                )
+
+            elif current_view == "TTT_MODE":
+                if UI_VERSION == "2":
+                    draw_ttt_mode(stdscr)
+                else:
+                    _draw_card_list(stdscr, ["1 PLAYER  (vs Computer)", "2 PLAYER"],
+                                    ttt_sel, title="NOUGHTS & CROSSES",
+                                    subtitle="  A/Right: choose    B/Left: back",
+                                    color=curses.color_pair(5))
+
+            elif current_view == "KEYPAD":
+                name = GAME_OPTIONS[selected_game_idx][0]
+                if pending_game_key == "IMPOSTER":
+                    name += f" — PLAYER {imposter_pin_stage}"
+                else:
+                    _kp_2p = ((pending_game_key == "TICTACTOE" and ttt_mode == "2P")
+                              or (pending_game_key != "TICTACTOE" and pending_game_2p))
+                    if _kp_2p:
+                        name += f" — PLAYER {ttt_stage}"
+                draw_keypad(stdscr, name, keypad_entered, keypad_error)
+
+            elif current_view == "ART_RUNNING":
+                if should_clear_screen:
+                    stdscr.clear(); should_clear_screen = False
+                active_art_type(stdscr, frame)
+                status = (f" {int(art_stop_time-time.time())}s remaining | BACK to exit "
+                          if art_stop_time else " Running indefinitely | BACK to exit ")
+                try:
+                    stdscr.addstr(max_y-1, 0, status.center(max_x-1),
+                                  curses.A_REVERSE|curses.A_DIM)
+                except curses.error:
+                    pass
+
+            elif current_view == "CLEAR":
                 pass
 
-        elif current_view == "CLEAR":
-            pass
-
-        # Fake-off must stay completely blank, including temporary PIN and
-        # guest connection overlays.
-        if current_view != "FAKE_OFF":
-            # Codes are only displayed when explicitly requested. A player PIN
-            # temporarily takes priority over the guest connection password.
-            if player_pin_showing():
-                draw_player_pin_overlay(stdscr)
-            elif pair_showing():
-                draw_pair_overlay(stdscr)
-            else:
-                pair_restore_input()
+            # Fake-off must stay completely blank, including temporary PIN and
+            # guest connection overlays.
+            if current_view != "FAKE_OFF":
+                if player_pin_showing():
+                    draw_player_pin_overlay(stdscr)
+                elif pair_showing():
+                    draw_pair_overlay(stdscr)
+                else:
+                    pair_restore_input()
 
         stdscr.refresh()
+
+        if modern_graphic_mode:
+            try:
+                if hard_locked:
+                    graphic_view = "LOCKED"
+                elif system_locked:
+                    graphic_view = "KEYPAD"
+                else:
+                    graphic_view = current_view
+
+                _graphic_home_items = [
+                    (label, key, MODERN_HOME_ITEMS[index][2])
+                    for index, (label, _cmd, key) in enumerate(ART_OPTIONS)
+                ]
+
+                _graphic_games = []
+                for _label, _cmd, _key, _is2p in GAME_OPTIONS:
+                    _missing = (
+                        _key not in ("SNAKE", "TICTACTOE", "IMPOSTER")
+                        and not resolve_binary(GAME_KEYS.get(_key, [_key])[0])
+                    )
+                    _graphic_games.append((
+                        _label, _key, "NOT INSTALLED" if _missing else ""
+                    ))
+
+                _graphic_keypad_title = ""
+                _graphic_keypad_entered = keypad_entered
+                _graphic_keypad_error = keypad_error
+                _graphic_is_lock = bool(system_locked or current_view == "LOCKED")
+                if not _graphic_is_lock:
+                    _graphic_keypad_title = GAME_OPTIONS[selected_game_idx][0]
+                    if pending_game_key == "IMPOSTER":
+                        _graphic_keypad_title += f" — PLAYER {imposter_pin_stage}"
+                    else:
+                        _graphic_2p = (
+                            (pending_game_key == "TICTACTOE" and ttt_mode == "2P")
+                            or (pending_game_key != "TICTACTOE" and pending_game_2p)
+                        )
+                        if _graphic_2p:
+                            _graphic_keypad_title += f" — PLAYER {ttt_stage}"
+                else:
+                    _graphic_keypad_entered = lock_entered
+                    _graphic_keypad_error = lock_error
+
+                _graphic_state = {
+                    "view": graphic_view,
+                    "hard_locked": bool(hard_locked),
+                    "is_lock": _graphic_is_lock,
+                    "selected_art": selected_art_idx,
+                    "selected_game": selected_game_idx,
+                    "selected_duration": selected_dur_idx,
+                    "selected_art_label": ART_OPTIONS[selected_art_idx][0],
+                    "selected_art_key": ART_OPTIONS[selected_art_idx][2],
+                    "home_items": _graphic_home_items,
+                    "games": _graphic_games,
+                    "durations": [label.upper() for label, _seconds in DURATION_OPTIONS],
+                    "ttt_selected": ttt_sel,
+                    "imposter_counts": list(imposter_count_options),
+                    "imposter_count_index": imposter_count_selected,
+                    "keypad_title": _graphic_keypad_title,
+                    "keypad_entered": _graphic_keypad_entered,
+                    "keypad_error": _graphic_keypad_error,
+                    "keypad_row": keypad_row,
+                    "keypad_col": keypad_col,
+                    "overlay": graphic_overlay,
+                }
+                pitv_tvui.render(_graphic_state)
+            except Exception as _graphic_render_exc:
+                _GRAPHIC_UI_FAILED = True
+                log(f"Graphical interface failed; switching to text fallback: {_graphic_render_exc}")
+                try:
+                    pitv_framebuffer.clear_framebuffer()
+                except Exception:
+                    pass
+                try:
+                    stdscr.clear()
+                    stdscr.refresh()
+                except Exception:
+                    pass
+
         frame += 1
         time.sleep(0.08)
 
