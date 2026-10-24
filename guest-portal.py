@@ -932,7 +932,7 @@ def imposter_join_body(game_id):
          turn_not_active:'This turn has already ended. Refreshing the game…',
          invalid_game_session:'Your session expired. Reload this page and join again.'};
         doneStatus.textContent=message[x.j.error]||'PiTV could not advance the turn. Refreshing the game…';
-        turnSubmitting=false;stateRevision++;poll();return;
+        turnSubmitting=false;done.disabled=false;stateRevision++;poll();return;
        }
        doneStatus.textContent='Done. Moving on…';
        turnSubmitting=false;stateRevision++;poll();
@@ -948,7 +948,7 @@ def imposter_join_body(game_id):
     }
    }else if(phase==='round_complete'){
     content.appendChild(el('div','ROUND COMPLETE','imposter-role pick'));
-    content.appendChild(el('p','Wait for the TV to choose another round or start the vote.','imposter-note'));
+    content.appendChild(el('p','The host can start the vote now or continue for another clue round with the same roles and word.','imposter-note'));
    }else if(phase==='vote'){
     content.appendChild(el('p','Who do you think is the imposter? You may change your vote until time runs out.','imposter-note'));
     var cd=el('p','15 seconds left','imposter-countdown');cd.id='voteCountdown';content.appendChild(cd);
