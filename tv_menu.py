@@ -1401,14 +1401,33 @@ def run_imposter(stdscr,players: list[str]) -> None:
             while input_queue:
                 cmd=input_queue.pop(0)
                 if isinstance(cmd,tuple):continue
-                if cmd in ("BACK","HOME"):
-                    pitv_imposter.end_game(game_id);return
-                if phase=="round" and cmd in ("SELECT","RIGHT"):pitv_imposter.advance_turn(game_id)
+                if cmd == "HOME":
+                    pitv_imposter.end_game(game_id)
+                    return
+                if cmd == "BACK" and phase in ("round", "round_complete"):
+                    result = pitv_imposter.rewind_turn(game_id)
+                    if result.get("ok"):
+                        log(f"Imposter turn rewound to {result.get('current_turn', '?')}")
+                    else:
+                        log("Imposter Back ignored: no earlier player in this round.")
+                    # Re-read state before handling any more queued keys, because
+                    # Back can move the game from round_complete back into round.
+                    break
+                if cmd == "BACK":
+                    pitv_imposter.end_game(game_id)
+                    return
+                if phase=="round" and cmd in ("SELECT","RIGHT"):
+                    pitv_imposter.advance_turn(game_id)
                 elif phase=="round_complete":
-                    if cmd in ("UP","DOWN","LEFT","RIGHT"):choice=1-choice
+                    if cmd in ("UP","DOWN","LEFT","RIGHT"):
+                        choice=1-choice
                     elif cmd=="SELECT":
-                        if choice==0:pitv_imposter.next_round(game_id);choice=0
-                        else:pitv_imposter.start_vote(game_id)
+                        if choice==0:
+                            if not pitv_imposter.repeat_round(game_id):
+                                log("Imposter: could not start another clue round.")
+                            choice=0
+                        else:
+                            pitv_imposter.start_vote(game_id)
                 elif phase=="revealed" and cmd=="SELECT":
                     pitv_imposter.next_round(game_id);choice=0
             pitv_imposter.advance_deadlines(game_id)
@@ -1500,14 +1519,25 @@ def run_imposter(stdscr,players: list[str]) -> None:
                 elif phase=="round":
                     names=[p["name"] for p in state.get("players",[])];idx=int(state.get("turn_index",0) or 0)
                     who=names[idx] if 0<=idx<len(names) else "?"
-                    _imposter_draw_lines(stdscr,"IMPOSTER — ROUND "+str(state.get("round_number",1)),
-                        [("NOW IT IS",curses.color_pair(3)),(who.upper()+"'S GO",curses.color_pair(2)|curses.A_BOLD),
-                         "Give a clue without saying the exact word.","Press SELECT for the next player."])
+                    round_number = int(state.get("round_number", 1) or 1)
+                    rounds_per_game = int(state.get("rounds_per_game", 3) or 3)
+                    _imposter_draw_lines(stdscr,
+                        f"IMPOSTER — ROUND {round_number}/{rounds_per_game}",
+                        [("NOW IT IS",curses.color_pair(3)),
+                         (who.upper()+"'S GO",curses.color_pair(2)|curses.A_BOLD),
+                         "Give a clue without saying the exact word.",
+                         "Select: next player    Back: previous player"])
                 elif phase=="round_complete":
-                    _imposter_draw_lines(stdscr,"ROUND COMPLETE",["Everyone has had a turn.",
-                        ("GO ROUND AGAIN",curses.color_pair(2)|curses.A_BOLD|(curses.A_REVERSE if choice==0 else 0)),
-                        ("VOTE",curses.color_pair(5)|curses.A_BOLD|(curses.A_REVERSE if choice==1 else 0)),
-                        "Use Up/Down to choose, then Select."])
+                    round_number = int(state.get("round_number", 1) or 1)
+                    rounds_per_game = int(state.get("rounds_per_game", 3) or 3)
+                    _imposter_draw_lines(stdscr,
+                        f"ROUND {round_number}/{rounds_per_game} COMPLETE",
+                        ["Everyone has had a turn.",
+                         ("GO ROUND AGAIN — SAME ROLES & WORD",
+                          curses.color_pair(2)|curses.A_BOLD|(curses.A_REVERSE if choice==0 else 0)),
+                         ("VOTE NOW",
+                          curses.color_pair(5)|curses.A_BOLD|(curses.A_REVERSE if choice==1 else 0)),
+                         "Up/Down: choose    Select: confirm    Back: previous player"])
                 elif phase=="vote":
                     rem=max(0,int(float(state.get("vote_ends_at",now))-now+0.999))
                     _imposter_draw_lines(stdscr,"VOTE NOW",["Choose who you think the imposter is on your phone.",f"{rem} seconds remaining.","Votes can be changed until time runs out."])
@@ -3159,13 +3189,25 @@ def draw_games_menu(stdscr, sel):
     )
 
 
-def draw_imposter_count(stdscr, sel, options):
-    _draw_card_list(
-        stdscr, [f"{n} PLAYERS" for n in options], sel,
-        title="IMPOSTER — NUMBER OF PLAYERS",
-        subtitle="Each player needs a unique, assigned six-digit PIN.",
-        color=curses.color_pair(5),
-    )
+def draw_imposter_count(stdscr, count, max_count):
+    """A single-value selector; Up adds one player and Down removes one."""
+    h, w = stdscr.getmaxyx()
+    stdscr.erase()
+    _imposter_center(stdscr, 2, "IMPOSTER — NUMBER OF PLAYERS",
+                     curses.color_pair(5) | curses.A_BOLD)
+    _imposter_center(stdscr, max(4, h // 2 - 3), "PLAYERS",
+                     curses.color_pair(3))
+    _imposter_center(stdscr, h // 2 - 1, str(count),
+                     curses.color_pair(2) | curses.A_BOLD)
+    _imposter_center(stdscr, h // 2 + 1, "UP: +1 player",
+                     curses.color_pair(3) | curses.A_BOLD)
+    _imposter_center(stdscr, h // 2 + 2, "DOWN: -1 player",
+                     curses.color_pair(3) | curses.A_BOLD)
+    _imposter_center(stdscr, h // 2 + 4, f"Available PINs: {max_count} players maximum",
+                     curses.color_pair(3) | curses.A_DIM)
+    _imposter_center(stdscr, h - 2, "SELECT: confirm    BACK: cancel",
+                     curses.color_pair(3) | curses.A_DIM)
+    stdscr.refresh()
 
 
 def draw_duration_menu(stdscr, art_label, sel):
@@ -3594,9 +3636,13 @@ def main(stdscr):
 
             elif current_view == "IMPOSTER_COUNT":
                 if cmd == "UP":
-                    imposter_count_selected = (imposter_count_selected-1) % max(1,len(imposter_count_options))
+                    # The number is a bounded scroll wheel: Up adds a player.
+                    imposter_count_selected = min(
+                        imposter_count_selected + 1,
+                        max(0, len(imposter_count_options) - 1))
                 elif cmd == "DOWN":
-                    imposter_count_selected = (imposter_count_selected+1) % max(1,len(imposter_count_options))
+                    # Down removes a player, never going below three.
+                    imposter_count_selected = max(0, imposter_count_selected - 1)
                 elif cmd in ("BACK","LEFT"):
                     current_view = "GAMES_MENU"
                 elif cmd in ("SELECT","RIGHT"):
@@ -3629,7 +3675,7 @@ def main(stdscr):
                         codes = {str(code) for code in pins.values()
                                  if str(code).isdigit() and len(str(code)) == 6
                                  and not hmac.compare_digest(str(code), emergency)}
-                        max_players = min(12,len(codes))
+                        max_players = min(8,len(codes))
                         if max_players < 3:
                             show_message(stdscr,["IMPOSTER NEEDS 3+ PLAYERS","Assign unique six-digit PINs first.","Use: screen pin assign <name> <pin>"],color_pair=1,duration=3.0)
                             current_view = "GAMES_MENU"
@@ -3727,7 +3773,11 @@ def main(stdscr):
             draw_log_panel(stdscr)
 
         elif current_view == "IMPOSTER_COUNT":
-            draw_imposter_count(stdscr, imposter_count_selected, imposter_count_options)
+            draw_imposter_count(
+                stdscr,
+                imposter_count_options[imposter_count_selected],
+                imposter_count_options[-1],
+            )
 
         elif current_view == "TTT_MODE":
             _draw_card_list(stdscr, ["1 PLAYER  (vs Computer)", "2 PLAYER"],
