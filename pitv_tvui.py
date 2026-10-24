@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 import pitv_framebuffer
 
 WIDTH, HEIGHT = 1280, 720
-PNG_PATH = "/tmp/pitv-tvui.png"
+PNG_PATH = os.path.join(os.path.expanduser("~"), ".pitv", "tvui.png")
 BG = (5, 10, 27)
 PANEL = (13, 23, 46)
 PANEL_2 = (19, 32, 61)
@@ -683,6 +683,9 @@ def render(state):
         return False
 
     canvas = _draw_overlay(canvas, state.get("overlay")) or canvas
+    # Keep the temporary image in PiTV's private state directory rather than
+    # using a predictable /tmp path that another local account could symlink.
+    os.makedirs(os.path.dirname(PNG_PATH), mode=0o700, exist_ok=True)
     canvas.save(PNG_PATH, format="PNG", optimize=False)
     prepared = pitv_framebuffer.prepare_png(PNG_PATH)
     pitv_framebuffer.display_prepared_frame(prepared)
