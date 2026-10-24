@@ -569,14 +569,20 @@ def _draw_imposter_count(canvas, state):
     _label(d,(54,79),"IMPOSTER",22,WHITE,True)
     _label(d,(1224,81),"PARTY GAME",13,MUTED,True,anchor="ra")
     options=state.get("imposter_counts",[])
+    if not options:
+        options=[3]
     selected=max(0,min(int(state.get("imposter_count_index",0)),len(options)-1))
-    # Big, clear number cards with a simple people motif.
+    # Show a centred, scrollable strip so a larger group of active PINs does
+    # not push player cards off either edge of the TV.
     card_w,card_h,gap=132,168,14
-    total=len(options)*card_w+max(0,len(options)-1)*gap
+    visible=min(len(options),7)
+    total=visible*card_w+max(0,visible-1)*gap
     x0=(WIDTH-total)//2
+    first=max(0,min(len(options)-visible,selected-visible//2))
     y=260
-    for idx,count in enumerate(options):
-        x=x0+idx*(card_w+gap); chosen=idx==selected
+    for idx in range(first,first+visible):
+        count=options[idx]
+        x=x0+(idx-first)*(card_w+gap); chosen=idx==selected
         d.rounded_rectangle((x,y,x+card_w,y+card_h),radius=18,
                             fill=(24,62,113) if chosen else PANEL,
                             outline=CYAN if chosen else (39,63,99),width=3 if chosen else 1)
