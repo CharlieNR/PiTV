@@ -129,7 +129,7 @@ def display_png(path: str, device: str = "/dev/fb0") -> dict[str, Any]:
         with mmap.mmap(fb.fileno(), info["memory_length"], flags=mmap.MAP_SHARED,
                        prot=mmap.PROT_READ | mmap.PROT_WRITE) as mapped:
             for y in range(height):
-                row[:] = b"\\x00" * line_length
+                row[:] = bytes(line_length)
                 row_base = xoffset * bytes_per_pixel
                 for x in range(width):
                     r, g, b = pixels[x, y]
