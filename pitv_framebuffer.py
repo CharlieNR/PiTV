@@ -197,9 +197,19 @@ def display_png_region(
         if dest_width <= 0 or dest_height <= 0:
             raise RuntimeError(f"Framebuffer region has invalid size: {dest_width}x{dest_height}.")
 
-        band = image.crop((left, top, right, bottom))
-        if band.size != (dest_width, dest_height):
-            band = band.resize((dest_width, dest_height), resample=Image.Resampling.NEAREST)
+        # Match the full-screen render exactly by resizing the whole source first,
+        # then cropping the correspondingly scaled rectangle. Resizing the crop
+        # independently can shift nearest-neighbour sampling at its edges.
+        if image.size != (target_width, target_height):
+            image = image.resize(
+                (target_width, target_height), resample=Image.Resampling.NEAREST
+            )
+        band = image.crop((
+            dest_left - image_left,
+            dest_top - image_top,
+            dest_right - image_left,
+            dest_bottom - image_top,
+        ))
         pixels = band.load()
 
         red, green, blue = info["red"], info["green"], info["blue"]
