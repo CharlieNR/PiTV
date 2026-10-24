@@ -1109,11 +1109,10 @@ IMPOSTER_JOIN_IMAGE = "/tmp/pitv-imposter-join.png"
 
 
 def _imposter_render_join_image(url, joined, total):
-    """Generate a real PNG containing the QR code and join-screen text.
+    """Generate a genuine QR PNG containing the QR code and join-screen text.
 
-    The PNG is shown by fbi on the Linux framebuffer. It is not converted into
-    terminal characters or curses half-blocks, so the QR modules are actual
-    black-and-white pixels on the TV.
+    It is rendered as image pixels, not terminal characters or curses half-blocks.
+    The initial PNG and framebuffer buffer are prepared before the final player PIN.
     """
     try:
         import qrcode
@@ -1164,7 +1163,7 @@ def _imposter_render_join_image(url, joined, total):
                  detail_font, (224, 233, 246))
         centered(url, 690, url_font, (158, 177, 204))
 
-        temporary = f"{IMPOSTER_JOIN_IMAGE}.{os.getpid()}.tmp"
+        temporary = f"{IMPOSTER_JOIN_IMAGE}.{os.getpid()}.{threading.get_ident()}.tmp"
         canvas.save(temporary, format="PNG", optimize=False, compress_level=1)
         os.replace(temporary, IMPOSTER_JOIN_IMAGE)
         return IMPOSTER_JOIN_IMAGE
@@ -1181,6 +1180,39 @@ def _imposter_render_join_image(url, joined, total):
 
 _imposter_preparation_lock = threading.Lock()
 _imposter_preparation = None
+
+
+
+def _imposter_update_join_count(joined: int, total: int):
+    """Redraw only the player-count text in the saved PNG; never rebuild its QR."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        with Image.open(IMPOSTER_JOIN_IMAGE) as opened:
+            canvas = opened.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+        font_dir = "/usr/share/fonts/truetype/dejavu"
+        try:
+            font = ImageFont.truetype(os.path.join(font_dir, "DejaVuSans-Bold.ttf"), 25)
+        except OSError:
+            font = ImageFont.load_default()
+        draw.rectangle((0, 615, 1279, 653), fill=(9, 17, 31))
+        text = f"Players connected: {joined}/{total}"
+        bounds = draw.textbbox((0, 0), text, font=font)
+        text_width = bounds[2] - bounds[0]
+        draw.text(((1280 - text_width) // 2, 621), text, font=font, fill=(151, 255, 188))
+        temporary = f"{IMPOSTER_JOIN_IMAGE}.{os.getpid()}.{threading.get_ident()}.tmp"
+        canvas.save(temporary, format="PNG", optimize=False, compress_level=1)
+        os.replace(temporary, IMPOSTER_JOIN_IMAGE)
+        return IMPOSTER_JOIN_IMAGE
+    except Exception as e:
+        log(f"Imposter player-count PNG update failed: {type(e).__name__}: {e}")
+        try:
+            if "temporary" in locals() and os.path.exists(temporary):
+                os.unlink(temporary)
+        except OSError:
+            pass
+        return None
 
 
 def _imposter_prepare_join_screen(total: int) -> None:
@@ -1395,7 +1427,7 @@ def run_imposter(stdscr,players: list[str]) -> None:
             due=now-last_draw >= (0.30 if phase in ("vote","results") else 0.45)
             sig=(phase,state.get("joined_count"),state.get("round_number"),state.get("turn_index"),choice,
                  tuple((x.get("name"),x.get("count")) for x in state.get("results",[])))
-            if due and (sig!=drawn or phase in ("vote","results") or join_needs_refresh):
+            if join_needs_refresh or (due and (sig!=drawn or phase in ("vote","results"))):
                 if phase=="join":
                     if join_needs_refresh:
                         if (join_viewer is None and joined_count == 0
@@ -1418,7 +1450,9 @@ def run_imposter(stdscr,players: list[str]) -> None:
                                     "No character-based QR substitute is being shown.",
                                 ])
                         else:
-                            image_path=_imposter_render_join_image(url,joined_count,len(players))
+                            image_path = (_imposter_update_join_count(joined_count, len(players))
+                                         if join_viewer is not None
+                                         else _imposter_render_join_image(url, joined_count, len(players)))
                             join_attempted_count=joined_count
                             if image_path and join_viewer is not None:
                                 # Re-render the count text, then update only that narrow
