@@ -212,10 +212,11 @@ DURATION_OPTIONS = [
     ("5 Minutes",  300),
 ]
 
-# Only fire remains as an external command; matrix is internal curses.
+# FIRE is rendered by libcaca in the real console. Let it auto-detect the
+# terminal dimensions: the PiTV console font does not provide 40 text rows.
 # CACA_DELAY=150000 µs → ~7 fps, much calmer on a TV than flat-out speed.
 EXTERNAL_CMDS = {
-    "FIRE": (["cacafire"], {"CACA_GEOMETRY": "80x40", "CACA_DELAY": "150000"}),
+    "FIRE": (["cacafire"], {"CACA_DELAY": "150000"}),
 }
 
 GAME_KEYS = {
@@ -1212,11 +1213,17 @@ def _imposter_start_join_image(stdscr, image_path):
 
 
 def _imposter_stop_join_image(stdscr, displayed):
-    """Restore curses after the static PNG has been drawn to the framebuffer."""
+    """Remove the full-screen PNG, then force curses to repaint its whole area."""
+    if displayed is not None:
+        try:
+            pitv_framebuffer.clear_framebuffer("/dev/fb0")
+        except Exception as e:
+            log(f"Could not clear QR framebuffer before restoring menu: {type(e).__name__}: {e}")
     try:
         curses.reset_prog_mode()
         curses.curs_set(0)
-        stdscr.erase()
+        stdscr.clear()
+        stdscr.clearok(True)
         stdscr.refresh()
     except curses.error:
         pass
@@ -1330,12 +1337,26 @@ def run_imposter(stdscr,players: list[str]) -> None:
                 if phase=="join":
                     if join_needs_refresh:
                         image_path=_imposter_render_join_image(url,joined_count,len(players))
-                        if join_viewer is not None:
-                            _imposter_stop_join_image(stdscr,join_viewer)
-                            join_viewer=None
                         join_attempted_count=joined_count
-                        join_image_joined=None
-                        if image_path:
+                        if image_path and join_viewer is not None:
+                            # Keep the QR and the rest of the screen untouched.
+                            # Only the "Players connected" status line changes.
+                            try:
+                                info=pitv_framebuffer.display_png_region(
+                                    image_path, "/dev/fb0", (0, 615, 1280, 654))
+                                join_image_joined=joined_count
+                                log(
+                                    "Imposter player count updated without redrawing QR: "
+                                    f"{joined_count}/{len(players)}; "
+                                    f"band={info['width']}x{info['height']}."
+                                )
+                            except Exception as e:
+                                join_image_joined=joined_count
+                                log(
+                                    "Imposter player-count framebuffer update failed: "
+                                    f"{type(e).__name__}: {e}. Keeping the existing QR on screen."
+                                )
+                        elif image_path:
                             join_viewer=_imposter_start_join_image(stdscr,image_path)
                             if join_viewer is not None:
                                 join_image_joined=joined_count
@@ -1346,7 +1367,7 @@ def run_imposter(stdscr,players: list[str]) -> None:
                                     url,
                                     "No character-based QR substitute is being shown.",
                                 ])
-                        else:
+                        elif join_viewer is None:
                             _imposter_draw_lines(stdscr,"QR IMAGE GENERATION ERROR",[
                                 "PiTV could not create the QR PNG image.",
                                 "Check /tmp/pitv.log for the Python QR/Pillow error.",
@@ -2009,22 +2030,39 @@ def show_message(stdscr, lines: list, color_pair: int = 4, duration: float = 3.0
 
 def run_external_art(stdscr, art_entry, duration):
     """
-    Launch an external art program.  A daemon monitor thread kills it the
-    moment BACK/SELECT/CLEAR/HOME arrives so the exit is always responsive
-    even when the subprocess is pegging the CPU.
+    Launch an external art program. A daemon monitor thread kills it when
+    BACK/SELECT/CLEAR/HOME arrives so the exit remains responsive.
     """
     cmd_list, env_extras = art_entry
+    requested_binary = cmd_list[0]
+    resolved_binary = resolve_binary(requested_binary)
+    if not resolved_binary:
+        package = {"cacafire": "caca-utils"}.get(requested_binary, requested_binary)
+        log(f"Art program missing: {requested_binary}; install package {package}")
+        show_message(stdscr, [
+            "ART PROGRAM NOT INSTALLED",
+            "",
+            f"Binary '{requested_binary}' was not found.",
+            f"Install: sudo apt install -y {package}",
+        ], color_pair=1, duration=5.0)
+        return
+
+    cmd_list = [resolved_binary] + cmd_list[1:]
     env = {**os.environ, **env_extras}
-    log(f"Art start: {cmd_list[0]}")
+    log(f"Art start: {requested_binary} -> {resolved_binary}")
     curses.def_prog_mode()
     curses.endwin()
     _reset_terminal()
 
     try:
         proc = subprocess.Popen(cmd_list, env=env)
-    except FileNotFoundError:
-        log(f"ERROR: {cmd_list[0]} not found")
+    except OSError as e:
+        log(f"ERROR starting art {requested_binary}: {type(e).__name__}: {e}")
         curses.reset_prog_mode(); curses.curs_set(0)
+        show_message(stdscr, [
+            "ART PROGRAM FAILED TO START",
+            f"{requested_binary}: {e}",
+        ], color_pair=1, duration=4.0)
         return
 
     start      = time.time()
@@ -2045,14 +2083,21 @@ def run_external_art(stdscr, art_entry, duration):
 
     monitor = threading.Thread(target=_monitor, daemon=True)
     monitor.start()
-    proc.wait()
+    exit_code = proc.wait()
+    elapsed = time.time() - start
     stop_event.set()
     monitor.join(timeout=1)
     if proc.poll() is None:
         proc.kill()
 
-    log(f"Art stop: {cmd_list[0]}")
+    log(f"Art stop: {requested_binary} (exit={exit_code}, runtime={elapsed:.2f}s)")
     curses.reset_prog_mode(); curses.curs_set(0)
+    if exit_code not in (0, -15, -9, 143):
+        show_message(stdscr, [
+            "ART PROGRAM EXITED WITH AN ERROR",
+            f"{requested_binary} returned status {exit_code}.",
+            "Check /tmp/pitv.log for details.",
+        ], color_pair=1, duration=4.0)
 
 
 def run_game(stdscr, cmd_list: list):
