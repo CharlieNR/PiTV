@@ -2120,6 +2120,8 @@ class Handler(BaseHTTPRequestHandler):
                 set_guest_mode(False)
             elif ADMIN and action in ("guest_lock", "guest_unlock"):
                 set_guest_lock(action == "guest_lock")
+            elif ADMIN and action == "guest_kick":
+                pitv_state.write_value("GUEST_PORTAL_SECRET", secrets.token_hex(32))
             self.send_response(204); self.end_headers()
             return
 
