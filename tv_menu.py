@@ -144,6 +144,7 @@ def set_highscore_name(binary: str, who: str) -> None:
 
 current_view        = "MENU"
 fake_off_active     = False       # simulated TV-off: blank screen until Back
+force_home_requested = False     # sticky until a blocking runner returns
 selected_art_idx    = 0
 selected_game_idx   = 0
 selected_dur_idx    = 0
@@ -514,7 +515,7 @@ def listen_controllers() -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 def listen_fifo():
-    global fake_off_active
+    global fake_off_active, force_home_requested
     if os.path.exists(FIFO_PATH):
         try: os.remove(FIFO_PATH)
         except Exception: pass
@@ -537,7 +538,9 @@ def listen_fifo():
 
                     if cmd == "CLEAR_FORCE":
                         # Stop the current activity and force the home menu.
+                        # Keep this request set while a blocking game unwinds.
                         # Clear input leases so they cannot swallow the exit.
+                        force_home_requested = True
                         fake_off_active = False
                         _clear_web_pin_lease()
                         _clear_web_keyboard_lease()
@@ -549,6 +552,7 @@ def listen_fifo():
                     if cmd == "FAKE_OFF":
                         # Stop active games/screensavers, then keep the frame
                         # buffer blank until the user presses Back/Home.
+                        force_home_requested = False
                         fake_off_active = True
                         _clear_web_pin_lease()
                         _clear_web_keyboard_lease()
@@ -3560,7 +3564,7 @@ def main(stdscr):
     global ttt_sel, ttt_mode, ttt_stage, ttt_p1
     global otp_fail_count, system_locked, log_visible
     global lock_fail_count, hard_locked
-    global controller_mode, fake_off_active
+    global controller_mode, fake_off_active, force_home_requested
 
     curses.curs_set(0)
     stdscr.nodelay(True)
@@ -3882,6 +3886,14 @@ def main(stdscr):
             elif current_view in ("ART_RUNNING","CLEAR"):
                 if cmd in ("BACK","SELECT","LEFT"):
                     current_view = "MENU"
+
+        # A force-home request may arrive while a blocking game is running.
+        # Honour it after the runner returns, even if the game wrapper normally
+        # goes back to the Games menu. It never bypasses lockout screens.
+        if force_home_requested:
+            if not hard_locked and not system_locked:
+                current_view = "MENU"
+            force_home_requested = False
 
         # A fake-off request may arrive while a blocking game is running.
         # Reassert it after the runner returns and before rendering.
