@@ -1745,7 +1745,13 @@ function sync(){
   }).then(function(s){ if(s) apply(s); }).catch(function(){});
 }
 setupAdminForms();
-if(ADMIN){showTab('remote');loadAdminPins();}
+if(ADMIN){
+  showTab('remote');loadAdminPins();
+  setInterval(function(){
+    var pinsView=document.getElementById('pinsView');
+    if(pinsView&&!pinsView.hidden)loadAdminPins();
+  },60000);
+}
 sync(); setInterval(sync, POLL*1000);
 document.addEventListener('visibilitychange', function(){
   if(!document.hidden) sync();              // straight back on re-open
