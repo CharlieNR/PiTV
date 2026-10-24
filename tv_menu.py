@@ -3863,11 +3863,21 @@ def _activate_game_selection(stdscr):
         current_view = "KEYPAD"
 
 
+def _reset_graphic_ui_cache():
+    """Make the image UI redraw after a blocking console app uses the framebuffer."""
+    if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+        try:
+            pitv_tvui.reset_cache()
+        except Exception:
+            pass
+
+
 def _activate_home_selection(stdscr):
     global current_view
     _label, art_type, art_key = ART_OPTIONS[selected_art_idx]
     if art_key == "MIRROR":
         run_mirror(stdscr)
+        _reset_graphic_ui_cache()
         current_view = "MENU"
     elif art_key == "GAMES":
         current_view = "GAMES_MENU"
@@ -4085,6 +4095,9 @@ def main(stdscr):
                     current_view = "MENU"
                 else:
                     current_view = "MENU"
+                # Direct-run commands can leave the view name unchanged even
+                # though an external app has overwritten the framebuffer.
+                _reset_graphic_ui_cache()
                 break
 
             # ── View-specific handling ───────────────────────────────
