@@ -101,12 +101,12 @@ fi
 
 # Imposter generates a genuine QR PNG and writes its pixels directly to /dev/fb0.
 # This avoids fbi's virtual-terminal/console handling; no terminal-character QR fallback is used.
-if ! python3 -c 'import pitv_framebuffer; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
+if ! python3 -c 'import pitv_framebuffer; import pitv_tvui; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
     echo "Installing Python QR/Pillow dependencies for direct framebuffer rendering..."
     sudo apt-get install -y python3-qrcode python3-pil fonts-dejavu-core
 fi
-if ! python3 -c 'import pitv_framebuffer; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
-    echo "ERROR: Python framebuffer/QR/Pillow dependencies are unavailable."
+if ! python3 -c 'import pitv_framebuffer; import pitv_tvui; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
+    echo "ERROR: PiTV image UI, framebuffer, QR, or Pillow dependencies are unavailable."
     exit 1
 fi
 
