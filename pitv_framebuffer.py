@@ -311,7 +311,8 @@ def display_png_region(
             flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE,
         ) as mapped:
             current_y = info["yoffset"]
-            if info["virtual_height"] >= 2 * height:
+            if (info["virtual_height"] >= 2 * height
+                    and info["memory_length"] >= 2 * height * line_length):
                 page_start = current_y * line_length
                 staged = bytearray(mapped[page_start:page_start + height * line_length])
                 for y, row in enumerate(rows):
