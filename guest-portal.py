@@ -1718,7 +1718,7 @@ function closeKeyboard(){releaseKeyboard();}
 // seconds — nobody has to know to pull-to-refresh.
 var state = null;
 function apply(s){
-  if(state && (s.sky !== state.sky || s.guest_mode !== state.guest_mode)){
+  if(state && (s.sky !== state.sky || (!ADMIN && s.guest_mode !== state.guest_mode))){
     location.reload(); return;              // the page shape changed
   }
   state = s;
