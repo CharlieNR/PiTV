@@ -4081,9 +4081,12 @@ def main(stdscr):
             # ── View-specific handling ───────────────────────────────
             if current_view == "MENU":
                 if UI_VERSION == "2":
-                    if cmd in ("UP", "DOWN", "LEFT", "RIGHT"):
-                        selected_art_idx = _modern_grid_move(
-                            selected_art_idx, cmd, len(ART_OPTIONS), _modern_columns(max_x, 5))
+                    # The image-led home screen is a single horizontal shelf.
+                    # Let either axis browse it, so every remote's D-pad works.
+                    if cmd in ("LEFT", "UP"):
+                        selected_art_idx = (selected_art_idx - 1) % len(ART_OPTIONS)
+                    elif cmd in ("RIGHT", "DOWN"):
+                        selected_art_idx = (selected_art_idx + 1) % len(ART_OPTIONS)
                     elif cmd == "SELECT":
                         _activate_home_selection(stdscr)
                     elif cmd == "BACK":
@@ -4395,7 +4398,7 @@ def main(stdscr):
             try:
                 if hard_locked:
                     graphic_view = "LOCKED"
-                elif system_locked:
+                elif system_locked or current_view == "LOCKED":
                     graphic_view = "KEYPAD"
                 else:
                     graphic_view = current_view
