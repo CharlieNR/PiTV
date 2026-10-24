@@ -1122,22 +1122,66 @@ def controls_body(username):
     if ADMIN:
         gm = guest_mode_on()
         lk = guest_locked()
-        head = (f"<h1>PiTV Admin</h1><p class=muted>Signed in as {name}</p>"
-                + pin_card +
-                f'<div class=card><p class=muted>Guest Mode is '
-                f'<b id=gmstate>{"ON" if gm else "OFF"}</b></p><div class=row>'
-                f'<button class=on onclick="act(\'guest_on\')">Guest Mode On</button>'
-                f'<button class=off onclick="act(\'guest_off\')">Guest Mode Off</button>'
-                f'</div>'
-                f'<p class=muted style="margin-top:14px">Guest controls are '
-                f'<b id=lkstate>{"LOCKED" if lk else "unlocked"}</b></p>'
-                f'<div class=row>'
-                f'<button class=off onclick="act(\'guest_lock\')">Lock</button>'
-                f'<button class=on onclick="act(\'guest_unlock\')">Unlock</button>'
-                f'</div></div>')
+        head = (f"<h1>PiTV Admin</h1><p class=muted>Signed in as {name}</p>" + pin_card)
+        remote_open = '<div id=remoteView class="app-view admin-view">'
+        remote_close = '</div>'
+        admin_view = f"""
+<div id=adminView class="app-view admin-view" hidden>
+  <h1 class=tab-title>Admin</h1>
+  <p class=muted>Manage guest access and short-lived player PINs.</p>
+  <div class=card>
+    <p class=section-label>Guest access</p>
+    <p class=muted>Guest Mode: <b id=gmstate>{"ON" if gm else "OFF"}</b></p>
+    <div class=admin-action-grid>
+      <button class=on onclick="act('guest_on')">Allow guests</button>
+      <button class=off onclick="act('guest_off')">Block sign-in</button>
+    </div>
+    <p class=muted style="margin-top:16px">Guest controls: <b id=lkstate>{"LOCKED" if lk else "unlocked"}</b></p>
+    <div class=admin-action-grid>
+      <button class=off onclick="act('guest_lock')">Block controls</button>
+      <button class=on onclick="act('guest_unlock')">Unblock controls</button>
+    </div>
+    <button class=off style="margin-top:12px" onclick="kickAllGuests()">Sign out all guests</button>
+    <p id=adminStatus class=admin-status aria-live=polite></p>
+  </div>
+  <div class=card>
+    <p class=section-label>Temporary player PIN</p>
+    <p class=muted>Create a randomly generated PIN for a named player. It works for 24 hours, then expires automatically. The PIN is never custom-picked.</p>
+    <form id=tempPinForm>
+      <input id=tempPinName type=text maxlength=40 autocomplete=off placeholder="Player name" required>
+      <button id=tempPinCreate type=submit>Generate 24-hour PIN</button>
+    </form>
+    <p id=tempPinStatus class=admin-status aria-live=polite></p>
+  </div>
+  <div class=card>
+    <p class=section-label>Session</p>
+    <p class=muted>Signed in as {name}</p>
+    <a href="/logout">Sign out</a>
+  </div>
+</div>"""
+        pins_view = """
+<div id=pinsView class="app-view admin-view" hidden>
+  <h1 class=tab-title>Player PINs</h1>
+  <p class=muted>Tap a PIN while the TV is showing a PIN keypad to enter it automatically. The emergency code is not listed here.</p>
+  <button onclick="loadAdminPins()">Refresh PINs</button>
+  <p id=pinListStatus class=admin-status aria-live=polite>Loading PINs…</p>
+  <div id=pinList class=pin-list></div>
+</div>"""
+        tab_nav = """
+<nav class=tabbar aria-label="Main menu"><div class=tabbar-inner>
+  <button type=button data-tab=remote class=active onclick="showTab('remote')">Remote</button>
+  <button type=button data-tab=admin onclick="showTab('admin')">Admin</button>
+  <button type=button data-tab=pins onclick="showTab('pins')">Pins</button>
+</div></nav>"""
+        account_link = ''
     else:
-        head = (f"<h1>PiTV Guest</h1><p class=muted>Signed in as {name}</p>"
-                + pin_card)
+        head = (f"<h1>PiTV Guest</h1><p class=muted>Signed in as {name}</p>" + pin_card)
+        remote_open = ''
+        remote_close = ''
+        admin_view = ''
+        pins_view = ''
+        tab_nav = ''
+        account_link = '<p class=muted><a href="/logout">Sign out</a></p>'
     sky = ""
     if sky_on():
         rows = "".join(
@@ -1149,7 +1193,7 @@ def controls_body(username):
                '<button onclick="act(\'sky_power_on\')">Sky On</button>'
                '<button onclick="act(\'sky_power_off\')">Sky Standby</button>'
                '</div></div>')
-    return (head + sky + """
+    return (remote_open + head + sky + """
 <div class=card><div class=row>
   <button onclick="act('tv_on')">TV On</button>
   <button onclick="act('tv_off')">TV Off</button></div>
@@ -1165,7 +1209,7 @@ def controls_body(username):
 <div class=card id=keyboardCard hidden><p class=muted>Type into a running PiTV game</p>
   <p class=muted>Use your phone's keyboard. Only one signed-in browser can type at a time.</p>
   <button onclick="openKeyboard()">Use phone keyboard</button></div>
-<p class=muted><a href="/logout">Sign out</a></p>
+""" + remote_close + admin_view + pins_view + tab_nav + account_link + """
 <div id=lockbar class=lockbar hidden>The host has paused the controls.</div>
 <div id=keyboardbar class=lockbar hidden>Someone else has exclusive TV input access. Navigation is temporarily paused.</div>
 <div id=pinPrompt class=pin-prompt hidden role=status aria-live=polite>
