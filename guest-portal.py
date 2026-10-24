@@ -48,6 +48,7 @@ from urllib.parse import parse_qs, urlparse
 import pitv_secrets
 import pitv_state
 import pitv_imposter
+import pitv_pins
 
 ADMIN           = "--admin" in sys.argv[1:]
 PORT            = 80 if ADMIN else 8080
@@ -1009,7 +1010,7 @@ def _imposter_players_for_pin(pin):
     """Require one unique six-digit player PIN; never accept the emergency PIN."""
     if not pin or not pin.isdigit() or len(pin) != 6 or pitv_secrets.check_emergency_code(pin):
         return []
-    try: pin_map = pitv_state.load_section("PLAYER_PINS", {})
+    try: pin_map = pitv_pins.load_all_pins()
     except Exception: pin_map = {}
     matches = []
     if isinstance(pin_map, dict):
