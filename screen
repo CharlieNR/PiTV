@@ -61,8 +61,8 @@ Updates:
 System:
   screen version                        show the installed PiTV software version
   screen version status                 show which menu interface is selected
-  screen version 1                      select the current Classic interface
-  screen version 2                      select the modern TV-style tile interface
+  screen version 1                      select the Classic backup interface
+  screen version 2                      select the default modern image-led interface
                                         (restart pitv-menu.service after switching)
   screen restart "<reason>"             reboot the Raspberry Pi and report the reason
   screen unlock authorise <code>        clear a full lockdown
