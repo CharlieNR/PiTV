@@ -4191,7 +4191,7 @@ def main(stdscr):
                 if UI_VERSION == "2":
                     if cmd in ("UP", "DOWN", "LEFT", "RIGHT"):
                         selected_game_idx = _modern_grid_move(
-                            selected_game_idx, cmd, len(GAME_OPTIONS), _modern_columns(max_x, 5))
+                            selected_game_idx, cmd, len(GAME_OPTIONS), 5)
                     elif cmd == "BACK":
                         current_view = "MENU"
                     elif cmd == "SELECT":
