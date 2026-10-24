@@ -30,11 +30,11 @@ except Exception as _graphic_ui_import_exc:
 _GRAPHIC_UI_FAILED = False
 
 try:
-    UI_VERSION = str(pitv_state.read_value("UI_VERSION", "1")).strip()
+    UI_VERSION = str(pitv_state.read_value("UI_VERSION", "2")).strip()
 except Exception:
-    UI_VERSION = "1"
+    UI_VERSION = "2"
 if UI_VERSION not in ("1", "2"):
-    UI_VERSION = "1"
+    UI_VERSION = "2"
 
 # ─────────────────────────────────────────────────────────────────────
 # OPTIONAL DEPENDENCIES
