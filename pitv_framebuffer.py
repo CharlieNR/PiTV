@@ -113,13 +113,51 @@ def prepare_png(path: str, device: str = "/dev/fb0") -> dict[str, Any]:
         image = image.resize(target_size, Image.Resampling.NEAREST)
     canvas = Image.new("RGB", (width, height), (0, 0, 0))
     canvas.paste(image, ((width - image.width) // 2, (height - image.height) // 2))
-    rgb = canvas.tobytes()
-
     red, green, blue = info["red"], info["green"], info["blue"]
     bytes_per_pixel = info["bytes_per_pixel"]
     line_length = info["line_length"]
     xoffset = info["xoffset"]
-    alpha = ((1 << info["transparency"][1]) - 1) << info["transparency"][0] if info["transparency"][1] else 0
+    transparency = info["transparency"]
+
+    # Fast paths for the usual little-endian RGB888 / XRGB8888 framebuffer
+    # layouts. Pillow performs channel packing in native code; the generic
+    # fallback below is intentionally retained for unusual bitfield layouts.
+    standard_bgr = (
+        sys.byteorder == "little"
+        and red == (16, 8, 0)
+        and green == (8, 8, 0)
+        and blue == (0, 8, 0)
+        and xoffset == 0
+    )
+    packed = None
+    if standard_bgr and bytes_per_pixel == 3 and transparency[1] == 0:
+        packed = canvas.tobytes("raw", "BGR")
+    elif (standard_bgr and bytes_per_pixel == 4
+          and transparency == (24, 8, 0)):
+        packed = canvas.convert("RGBA").tobytes("raw", "BGRA")
+    elif (standard_bgr and bytes_per_pixel == 4
+          and transparency[1] == 0):
+        packed = canvas.tobytes("raw", "BGRX")
+
+    if packed is not None:
+        row_bytes = width * bytes_per_pixel
+        frame = bytearray(line_length * height)
+        if line_length == row_bytes:
+            frame[:] = packed
+        else:
+            for y in range(height):
+                src = y * row_bytes
+                dst = y * line_length
+                frame[dst:dst + row_bytes] = packed[src:src + row_bytes]
+        return {
+            "frame": bytes(frame),
+            "info": info,
+            "source_width": source_width,
+            "source_height": source_height,
+        }
+
+    rgb = canvas.tobytes()
+    alpha = ((1 << transparency[1]) - 1) << transparency[0] if transparency[1] else 0
     red_lut = tuple(_component(v, *red, "red") for v in range(256))
     green_lut = tuple(_component(v, *green, "green") for v in range(256))
     blue_lut = tuple(_component(v, *blue, "blue") for v in range(256))
