@@ -562,6 +562,15 @@ def listen_fifo():
                         pair_show()
                         continue
 
+                    # Admin portal: briefly display a validated player PIN.
+                    if cmd.startswith("PIN_SHOW "):
+                        parts = raw.split(" ", 2)
+                        if len(parts) == 3 and len(parts[1]) == 6 and parts[1].isdigit():
+                            show_player_pin(parts[1], parts[2])
+                        else:
+                            log("Rejected malformed PIN_SHOW command")
+                        continue
+
                     # Sky Q. SKY_ON/SKY_OFF flip the master switch (off by
                     # default); "SKY <TOKEN>" is one button press, and does
                     # nothing at all while the switch is off.
@@ -1621,6 +1630,13 @@ _pair_restore   = None     # input to switch back to after showing the code
 
 _pair_cache = (0.0, {})
 
+# A PIN revealed from the admin portal is an ephemeral overlay, separate from
+# the guest connection password. The screen loop owns drawing; the FIFO thread
+# only updates this small, locked record.
+PIN_SHOW_SECS = 5
+_pin_display_lock = threading.Lock()
+_pin_display_state = {"name": "", "pin": "", "until": 0.0}
+
 
 def _pair_load() -> dict:
     """Cached for a second: the render loop asks ~12 times a second and we are
@@ -1680,6 +1696,76 @@ def pair_code() -> str:
         d["expires"] = now + PAIR_ROTATE
         _pair_save(d)
     return d["code"]
+
+
+def player_pin_showing() -> bool:
+    with _pin_display_lock:
+        return float(_pin_display_state.get("until", 0)) > time.time()
+
+
+def show_player_pin(pin: str, name: str) -> bool:
+    """Show a validated six-digit player PIN on the TV for five seconds."""
+    global _pair_restore
+    pin = str(pin).strip()
+    name = " ".join(str(name).split())[:40]
+    if len(pin) != 6 or not pin.isdigit() or not name:
+        log("Rejected invalid player PIN display request")
+        return False
+
+    with _pin_display_lock:
+        _pin_display_state.update({
+            "name": name,
+            "pin": pin,
+            "until": time.time() + PIN_SHOW_SECS,
+        })
+
+    # If the TV is on another known input, temporarily switch to PiTV and
+    # use the existing restoration mechanism so the previous input returns.
+    # As with the pairing overlay, do not interrupt an external game.
+    if (controller_mode != "GAME_EXTERNAL"
+            and tv_input_phys not in (None, PITV_INPUT_PHYS)):
+        if _pair_restore is None:
+            _pair_restore = tv_input_phys
+        _run_cec_cmd(f"tx 1f:82:{PITV_INPUT_PHYS}")
+    log(f"Player PIN display requested for {name} ({PIN_SHOW_SECS}s)")
+    return True
+
+
+def draw_player_pin_overlay(stdscr) -> None:
+    """Draw a large, high-contrast player PIN overlay for five seconds."""
+    with _pin_display_lock:
+        display = dict(_pin_display_state)
+    left = float(display.get("until", 0)) - time.time()
+    if left <= 0:
+        return
+
+    max_y, max_x = stdscr.getmaxyx()
+    if max_y < 4 or max_x < 8:
+        return
+    lines = [
+        "PLAYER PIN",
+        str(display.get("name", "")),
+        "",
+        "  ".join(str(display.get("pin", ""))),
+        "",
+        f"Disappears in {max(1, int(left + 0.999))}s",
+    ]
+    lines = [line[:max_x - 2] for line in lines]
+    width = min(max_x - 2, max(len(line) for line in lines) + 8)
+    width = max(1, width)
+    top = max(0, (max_y - len(lines) - 2) // 2)
+    x0 = max(0, (max_x - width) // 2)
+    for row in range(len(lines) + 2):
+        try:
+            stdscr.addstr(top + row - 1, x0, " " * width, curses.A_REVERSE)
+        except curses.error:
+            pass
+    for row, line in enumerate(lines):
+        attr = curses.A_REVERSE | (curses.A_BOLD if row in (0, 3) else curses.A_DIM)
+        try:
+            stdscr.addstr(top + row, max(0, (max_x - len(line)) // 2), line, attr)
+        except curses.error:
+            pass
 
 
 def pair_showing() -> bool:
@@ -3819,9 +3905,11 @@ def main(stdscr):
         elif current_view == "CLEAR":
             pass
 
-        # The connection password is only ever on screen when a guest has
-        # asked for it — never sitting in a corner for anyone to read.
-        if pair_showing():
+        # Codes are only displayed when explicitly requested. A player PIN
+        # temporarily takes priority over the guest connection password.
+        if player_pin_showing():
+            draw_player_pin_overlay(stdscr)
+        elif pair_showing():
             draw_pair_overlay(stdscr)
         else:
             pair_restore_input()
