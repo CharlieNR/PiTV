@@ -1450,9 +1450,12 @@ def run_imposter(stdscr,players: list[str]) -> None:
                                     "No character-based QR substitute is being shown.",
                                 ])
                         else:
-                            image_path = (_imposter_update_join_count(joined_count, len(players))
-                                         if join_viewer is not None
-                                         else _imposter_render_join_image(url, joined_count, len(players)))
+                            if join_viewer is not None:
+                                image_path = _imposter_update_join_count(joined_count, len(players))
+                                if not image_path:
+                                    image_path = _imposter_render_join_image(url, joined_count, len(players))
+                            else:
+                                image_path = _imposter_render_join_image(url, joined_count, len(players))
                             join_attempted_count=joined_count
                             if image_path and join_viewer is not None:
                                 # Re-render the count text, then update only that narrow
