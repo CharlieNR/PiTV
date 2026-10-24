@@ -258,8 +258,6 @@ def display_png_region(
         width, height = info["width"], info["height"]
         scale = min(width / source_width, height / source_height)
         target_width = max(1, min(width, round(source_width * scale)))
-        target_height = max(1, min(height, round(height * source_height / max(1, source_height))))
-        # Keep the same aspect-ratio transform as display_png().
         target_height = max(1, min(height, round(source_height * scale)))
         image_left = (width - target_width) // 2
         image_top = (height - target_height) // 2
