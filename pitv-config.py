@@ -213,6 +213,38 @@ def cmd_network(args):
     sys.exit(1)
 
 
+def cmd_interface(args):
+    """Read or persist the menu interface version (takes effect after restart)."""
+    choice = args[0] if args else "status"
+    current = str(pitv_state.read_value("UI_VERSION", "1")).strip()
+    if current not in ("1", "2"):
+        current = "1"
+
+    if choice in ("status", "show"):
+        name = "Classic" if current == "1" else "Modern TV"
+        print(f"PiTV interface version: {current} ({name})")
+        print("Change it with: screen version 1 or screen version 2")
+        return
+
+    if choice not in ("1", "2") or len(args) != 1:
+        print("Usage: screen version [1|2|status]")
+        sys.exit(1)
+
+    try:
+        pitv_state.write_value("UI_VERSION", choice)
+    except Exception as exc:
+        print(f"Could not save the interface choice: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    name = "Classic" if choice == "1" else "Modern TV"
+    print(f"Saved PiTV interface version {choice} ({name}).")
+    if current == choice:
+        print("That version was already selected.")
+    print("Restart the menu to apply it:")
+    print("  sudo systemctl restart pitv-menu.service")
+    print("This only restarts the PiTV menu service; it does not reboot the Pi.")
+
+
 def main():
     args = sys.argv[1:]
     cmd = args[0] if args else ""
@@ -222,8 +254,10 @@ def main():
         cmd_control(args[1:])
     elif cmd == "network":
         cmd_network(args[1:])
+    elif cmd == "interface":
+        cmd_interface(args[1:])
     else:
-        print("Usage: pitv-config.py <sky|control|network> ...")
+        print("Usage: pitv-config.py <sky|control|network|interface> ...")
         sys.exit(1)
 
 
