@@ -17,6 +17,7 @@ import pitv_secrets
 import pitv_state
 import pitv_imposter
 import pitv_framebuffer
+import pitv_pins
 
 # ─────────────────────────────────────────────────────────────────────
 # OPTIONAL DEPENDENCIES
