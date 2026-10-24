@@ -751,7 +751,7 @@ body.locked .card button{{opacity:.35;pointer-events:none;filter:grayscale(1)}}
 .section-label{{text-align:left;font-weight:700;margin-bottom:8px}}
 .admin-status{{min-height:22px;text-align:left;margin:8px 2px;color:#7fd1ff;font-size:14px}}
 .pin-list{{display:grid;gap:9px;margin-top:12px}}
-.pin-item{{display:flex;align-items:stretch;gap:8px}}.pin-row{{width:100%;margin:0;display:flex;align-items:center;gap:12px;text-align:left;padding:14px;background:#151b2b;border:1px solid #29334b}}.pin-item .pin-row{{flex:1;min-width:0}}
+.pin-item{{display:flex;align-items:stretch;gap:8px}}.pin-row{{-webkit-touch-callout:none;user-select:none;touch-action:manipulation;width:100%;margin:0;display:flex;align-items:center;gap:12px;text-align:left;padding:14px;background:#151b2b;border:1px solid #29334b}}.pin-item .pin-row{{flex:1;min-width:0}}
 .pin-row-copy{{flex:1;min-width:0}}
 .pin-row-name{{display:block;font-weight:700;overflow-wrap:anywhere}}
 .pin-row-meta{{display:block;color:#8b93a7;font-size:12px;margin-top:4px}}
@@ -1139,7 +1139,7 @@ def controls_body(username):
       <button class=on onclick="act('guest_on')">Allow guests</button>
       <button class=off onclick="act('guest_off')">Block sign-in</button>
     </div>
-    <p class=muted style="margin-top:16px">Guest controls: <b id=lkstate>{"LOCKED" if lk else "unlocked"}</b></p>
+    <p class=muted style="margin-top:16px">Guest controls: <b id=lkstate>{"LOCKED" if lk else "Unlocked"}</b></p>
     <div class=admin-action-grid>
       <button class=off onclick="act('guest_lock')">Block controls</button>
       <button class=on onclick="act('guest_unlock')">Unblock controls</button>
@@ -1231,7 +1231,7 @@ def controls_body(username):
       <button onclick="sendPinKey('7')">7</button><button onclick="sendPinKey('8')">8</button><button onclick="sendPinKey('9')">9</button>
       <button onclick="sendPinKey('DEL')">⌫</button><button onclick="sendPinKey('0')">0</button><button onclick="sendPinKey('OK')">OK</button>
     </div>
-    <button class=pin-cancel onclick="releasePinEntry()">Cancel and release keypad</button>
+    <button class=pin-cancel onclick="releasePinEntry()">Cancel PIN entry</button>
   </div>
 </div>
 <div class=modal id=keyboardModal hidden>
@@ -1254,10 +1254,21 @@ def controls_body(username):
     <button onclick="closeKeyboard()">Close</button>
   </div>
 </div>
+<div class=modal id=pinActionModal hidden>
+  <div class=modal-card role=dialog aria-modal=true aria-labelledby=pinActionTitle>
+    <h2 id=pinActionTitle>Player PIN</h2>
+    <p class=pin-entry-display id=pinActionCode></p>
+    <p class=muted>Choose what to do with this PIN.</p>
+    <button id=copyPinAction onclick="copySelectedPin()">Copy PIN</button>
+    <button id=showPinAction onclick="showSelectedPin()">Show on TV for 5 seconds</button>
+    <button class=pin-cancel onclick="closePinActionMenu()">Cancel</button>
+  </div>
+</div>
 <script>
 var ADMIN = %ADMIN%, POLL = %POLL%;
 var keyboardToken = "";
 var pinToken = "", pinEventId = "";
+var pinActionSelection = null, pinLongPressTimer = null, pinLongPressTriggered = false;
 var pinSendQueue = Promise.resolve();
 var pinEntryCount = 0, pinLastError = "";
 var pinPromptSeen = "", pinPromptDismissed = "";
@@ -1294,6 +1305,61 @@ function kickAllGuests(){
   if(!window.confirm('Sign out every guest session now? They will need to sign in again.'))return;
   act('guest_kick');
 }
+function openPinActionMenu(pin){
+  if(!ADMIN)return;
+  pinActionSelection={name:String(pin.name),pin:String(pin.pin)};
+  var title=document.getElementById('pinActionTitle');
+  var code=document.getElementById('pinActionCode');
+  if(title)title.textContent='PIN for '+pinActionSelection.name;
+  if(code)code.textContent=pinActionSelection.pin;
+  var modal=document.getElementById('pinActionModal');
+  if(modal)modal.hidden=false;
+}
+function closePinActionMenu(){
+  var modal=document.getElementById('pinActionModal');
+  if(modal)modal.hidden=true;
+  pinActionSelection=null;
+}
+function copySelectedPin(){
+  if(!ADMIN||!pinActionSelection)return;
+  var selection=pinActionSelection, value=pinActionSelection.pin;
+  function fallbackCopy(){
+    var field=document.createElement('textarea');
+    field.value=value;field.setAttribute('readonly','');
+    field.style.position='fixed';field.style.opacity='0';
+    document.body.appendChild(field);field.select();
+    var copied=false;
+    try{copied=document.execCommand('copy');}catch(e){}
+    field.remove();
+    return copied;
+  }
+  var copiedPromise=(navigator.clipboard&&navigator.clipboard.writeText)
+    ? navigator.clipboard.writeText(value).then(function(){return true;}).catch(function(){return fallbackCopy();})
+    : Promise.resolve(fallbackCopy());
+  copiedPromise.then(function(copied){
+    closePinActionMenu();
+    var status=document.getElementById('pinListStatus');
+    if(status)status.textContent=copied?'Copied '+selection.name+'’s PIN.':'Could not copy automatically. Select the PIN and copy it manually.';
+  });
+}
+function showSelectedPin(){
+  if(!ADMIN||!pinActionSelection)return;
+  var selection=pinActionSelection;
+  var status=document.getElementById('pinListStatus');
+  var button=document.getElementById('showPinAction');
+  if(button)button.disabled=true;
+  fetch('/admin/show-pin',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({name:selection.name,pin:selection.pin})})
+   .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+   .then(function(x){
+     if(!x.r.ok||!x.j.ok)throw new Error(x.j.error||'Could not show PIN on TV.');
+     closePinActionMenu();
+     if(status)status.textContent='Showing '+selection.name+'’s PIN on the TV for 5 seconds.';
+   }).catch(function(error){
+     if(status)status.textContent=error.message||'Could not show the PIN on TV.';
+   }).then(function(){if(button)button.disabled=false;});
+}
 function remainingTime(expiresAt){
   var seconds=Math.max(0,Math.floor(Number(expiresAt||0)-Date.now()/1000));
   var hours=Math.floor(seconds/3600),minutes=Math.floor((seconds%3600)/60);
@@ -1309,7 +1375,7 @@ function renderAdminPins(pins){
     status.textContent='No player PINs are assigned yet.';
     return;
   }
-  status.textContent=pins.length+' player PIN'+(pins.length===1?'':'s')+'. Tap a row to send its PIN to the active TV keypad.';
+  status.textContent=pins.length+' player PIN'+(pins.length===1?'':'s')+'. Tap a row to fill the active TV keypad; hold a row for copy/show options.';
   pins.forEach(function(pin){
     var item=document.createElement('div');item.className='pin-item';
     var select=document.createElement('button');
@@ -1320,7 +1386,34 @@ function renderAdminPins(pins){
     meta.textContent=pin.temporary?'Temporary · '+remainingTime(pin.expires_at):'Permanent PIN';
     var code=document.createElement('span');code.className='pin-row-code';code.textContent=pin.pin;
     copy.appendChild(player);copy.appendChild(meta);select.appendChild(copy);select.appendChild(code);
-    select.addEventListener('click',function(){fillAdminPin(pin.name,pin.pin);});
+
+    select.addEventListener('pointerdown',function(){
+      pinLongPressTriggered=false;
+      if(pinLongPressTimer)clearTimeout(pinLongPressTimer);
+      pinLongPressTimer=setTimeout(function(){
+        pinLongPressTriggered=true;
+        openPinActionMenu(pin);
+      },600);
+    });
+    ['pointerup','pointercancel','pointerleave','lostpointercapture'].forEach(function(eventName){
+      select.addEventListener(eventName,function(){
+        if(pinLongPressTimer){clearTimeout(pinLongPressTimer);pinLongPressTimer=null;}
+      });
+    });
+    select.addEventListener('contextmenu',function(e){
+      e.preventDefault();
+      if(pinLongPressTimer){clearTimeout(pinLongPressTimer);pinLongPressTimer=null;}
+      pinLongPressTriggered=true;
+      openPinActionMenu(pin);
+    });
+    select.addEventListener('click',function(e){
+      if(pinLongPressTriggered){
+        pinLongPressTriggered=false;
+        e.preventDefault();
+        return;
+      }
+      fillAdminPin(pin.name,pin.pin);
+    });
     item.appendChild(select);
     if(pin.temporary){
       var remove=document.createElement('button');remove.type='button';remove.className='pin-row-remove';
@@ -1732,7 +1825,7 @@ function apply(s){
   var gm = document.getElementById('gmstate');
   if(gm) gm.textContent = s.guest_mode ? 'ON' : 'OFF';
   var lk = document.getElementById('lkstate');
-  if(lk) lk.textContent = s.locked ? 'LOCKED' : 'unlocked';
+  if(lk) lk.textContent = s.locked ? 'LOCKED' : 'Unlocked';
   var kb = document.getElementById('keyboardbar');
   if(kb) kb.hidden = !(s.keyboard_busy && !s.keyboard_mine);
   var kbCard = document.getElementById('keyboardCard');
@@ -1987,12 +2080,35 @@ class Handler(BaseHTTPRequestHandler):
             if not self._session_user():
                 self._json({"ok": False, "error": "not_signed_in"}, code=401)
                 return
-            if path not in ("/admin/temp-pin", "/admin/temp-pin/remove"):
+            if path not in ("/admin/temp-pin", "/admin/temp-pin/remove", "/admin/show-pin"):
                 self._json({"ok": False, "error": "not_found"}, code=404)
                 return
             body = self._body()
             if body is None:
                 self._json({"ok": False, "error": "bad_request"}, code=413)
+                return
+            if path == "/admin/show-pin":
+                name = " ".join(str(body.get("name", "")).split())
+                pin = str(body.get("pin", "")).strip()
+                if not name or len(pin) != 6 or not pin.isdigit():
+                    self._json({"ok": False, "error": "invalid_pin"}, code=400)
+                    return
+                try:
+                    record = next((item for item in pitv_pins.all_pin_records()
+                                   if item.get("name") == name
+                                   and str(item.get("pin", "")) == pin), None)
+                except Exception as exc:
+                    print(f"Player PIN lookup failed: {type(exc).__name__}: {exc}", flush=True)
+                    self._json({"ok": False, "error": "pin_lookup_failed"}, code=500)
+                    return
+                if record is None:
+                    self._json({"ok": False, "error": "pin_not_found"}, code=404)
+                    return
+                safe_name = " ".join(str(record.get("name", "")).split())[:40]
+                if not write_fifo(f"PIN_SHOW {pin} {safe_name}"):
+                    self._json({"ok": False, "error": "tv_menu_unavailable"}, code=503)
+                    return
+                self._json({"ok": True, "name": safe_name, "seconds": 5})
                 return
             if path == "/admin/temp-pin":
                 try:
