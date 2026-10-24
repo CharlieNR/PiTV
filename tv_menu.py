@@ -3887,6 +3887,7 @@ def main(stdscr):
     global otp_fail_count, system_locked, log_visible
     global lock_fail_count, hard_locked
     global controller_mode, fake_off_active, force_home_requested
+    global _GRAPHIC_UI_FAILED
 
     curses.curs_set(0)
     stdscr.nodelay(True)
