@@ -16,6 +16,7 @@ import time
 import pitv_secrets
 import pitv_state
 import pitv_imposter
+import pitv_framebuffer
 
 # ─────────────────────────────────────────────────────────────────────
 # OPTIONAL DEPENDENCIES
@@ -1177,45 +1178,31 @@ def _imposter_render_join_image(url, joined, total):
 
 
 def _imposter_start_join_image(stdscr, image_path):
-    """Switch from curses to a real framebuffer image viewer for the join QR."""
+    """Draw the generated PNG directly to /dev/fb0 without launching fbi."""
     if not os.path.exists("/dev/fb0"):
-        log("Imposter QR image cannot be displayed: /dev/fb0 is missing")
+        log("Imposter QR cannot be displayed: /dev/fb0 does not exist.")
         return None
-    if not shutil.which("fbi"):
-        log("Imposter QR image cannot be displayed: fbi is not installed")
+    if not os.access("/dev/fb0", os.R_OK | os.W_OK):
+        log("Imposter QR cannot write to /dev/fb0; inspect its permissions and the PiTV service groups.")
         return None
 
     try:
+        # Stop curses from drawing while the PNG owns the framebuffer. The
+        # renderer reads the actual framebuffer geometry and pixel bitfields.
         curses.def_prog_mode()
         curses.endwin()
         _reset_terminal()
-        with open(LOG_PATH, "a") as viewer_log:
-            proc = subprocess.Popen(
-                [
-                    "fbi", "--vt", "1", "--device", "/dev/fb0",
-                    "--noverbose", "--nointeractive", "--autozoom",
-                    "--timeout", "3600", image_path,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=viewer_log,
-                close_fds=True,
-            )
-        # Let fbi initialise and report permission/device errors before treating
-        # the image as visible.
-        time.sleep(0.35)
-        if proc.poll() is not None:
-            log(f"Imposter framebuffer image viewer exited during startup (code {proc.returncode}); see {LOG_PATH}")
-            try:
-                curses.reset_prog_mode()
-                curses.curs_set(0)
-            except curses.error:
-                pass
-            return None
-        log("Imposter QR displayed as a PNG through the framebuffer")
-        return proc
+        info = pitv_framebuffer.display_png(image_path, "/dev/fb0")
+        log(
+            "Imposter QR PNG written directly to framebuffer: "
+            f"{info['width']}x{info['height']} at {info['bits_per_pixel']} bpp, "
+            f"stride={info['stride']} bytes; no external viewer was launched."
+        )
+        # True is a sentinel indicating that the framebuffer contains the PNG;
+        # unlike fbi, no child process must remain alive to keep it visible.
+        return True
     except Exception as e:
-        log(f"Could not launch Imposter framebuffer image viewer: {e}")
+        log(f"Imposter direct framebuffer rendering failed: {type(e).__name__}: {e}")
         try:
             curses.reset_prog_mode()
             curses.curs_set(0)
@@ -1224,20 +1211,8 @@ def _imposter_start_join_image(stdscr, image_path):
         return None
 
 
-def _imposter_stop_join_image(stdscr, proc):
-    """Stop the bitmap viewer and restore the saved curses display mode."""
-    if proc is not None and proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=1.5)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-                proc.wait(timeout=1.0)
-            except Exception:
-                pass
-        except Exception as e:
-            log(f"Error stopping Imposter framebuffer viewer: {e}")
+def _imposter_stop_join_image(stdscr, displayed):
+    """Restore curses after the static PNG has been drawn to the framebuffer."""
     try:
         curses.reset_prog_mode()
         curses.curs_set(0)
@@ -1346,8 +1321,7 @@ def run_imposter(stdscr,players: list[str]) -> None:
             joined_count=sum(1 for p in state.get("players",[]) if p.get("joined"))
             join_needs_refresh=(phase=="join" and (
                 (join_viewer is None and join_attempted_count!=joined_count)
-                or (join_viewer is not None and
-                    (joined_count!=join_image_joined or join_viewer.poll() is not None))
+                or (join_viewer is not None and joined_count!=join_image_joined)
             ))
             due=now-last_draw >= (0.30 if phase in ("vote","results") else 0.45)
             sig=(phase,state.get("joined_count"),state.get("round_number"),state.get("turn_index"),choice,
@@ -1367,8 +1341,8 @@ def run_imposter(stdscr,players: list[str]) -> None:
                                 join_image_joined=joined_count
                             else:
                                 _imposter_draw_lines(stdscr,"JOIN QR DISPLAY ERROR",[
-                                    "A QR PNG was generated, but the framebuffer viewer could not display it.",
-                                    "Check /tmp/pitv.log and confirm the Pi has /dev/fb0 and video-group access.",
+                                    "The QR PNG was generated, but direct framebuffer drawing failed.",
+                                    "Check /tmp/pitv.log for the exact device or pixel-format error.",
                                     url,
                                     "No character-based QR substitute is being shown.",
                                 ])

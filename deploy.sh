@@ -99,19 +99,14 @@ if command -v gst-inspect-1.0 >/dev/null 2>&1; then
     fi
 fi
 
-# Imposter creates a real QR PNG and displays it directly on the Linux framebuffer.
-# fbi is an image viewer; do not substitute terminal characters/half-blocks.
-if ! python3 -c 'import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1 \
-   || ! command -v fbi >/dev/null 2>&1; then
-    echo "Installing Python QR/Pillow libraries and framebuffer PNG viewer..."
-    sudo apt-get install -y python3-qrcode python3-pil fonts-dejavu-core fbi
+# Imposter generates a genuine QR PNG and writes its pixels directly to /dev/fb0.
+# This avoids fbi's virtual-terminal/console handling; no terminal-character QR fallback is used.
+if ! python3 -c 'import pitv_framebuffer; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
+    echo "Installing Python QR/Pillow dependencies for direct framebuffer rendering..."
+    sudo apt-get install -y python3-qrcode python3-pil fonts-dejavu-core
 fi
-if ! python3 -c 'import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
-    echo "ERROR: Python qrcode/Pillow is unavailable; cannot generate the Imposter QR PNG."
-    exit 1
-fi
-if ! command -v fbi >/dev/null 2>&1; then
-    echo "ERROR: fbi framebuffer image viewer is unavailable; cannot display the QR as an actual bitmap."
+if ! python3 -c 'import pitv_framebuffer; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
+    echo "ERROR: Python framebuffer/QR/Pillow dependencies are unavailable."
     exit 1
 fi
 
