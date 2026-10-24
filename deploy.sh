@@ -110,6 +110,17 @@ if ! python3 -c 'import pitv_framebuffer; import qrcode; from qrcode.constants i
     exit 1
 fi
 
+# Fire art uses cacafire from Debian's caca-utils package.
+# Install it on first deployment so the Fire option cannot silently exit to the menu.
+if ! command -v cacafire >/dev/null 2>&1; then
+    echo "Installing the PiTV Fire artwork dependency (caca-utils)..."
+    if sudo apt-get update -qq && sudo apt-get install -y caca-utils; then
+        echo "Fire artwork dependency ready."
+    else
+        echo "WARNING: caca-utils could not be installed. Fire will show an error until it is installed."
+    fi
+fi
+
 # Make sure all scripts are executable
 chmod +x *.sh *.py 2>/dev/null || true
 
