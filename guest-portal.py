@@ -1074,6 +1074,9 @@ def _imposter_api_post(self, path, body=None):
                     flush=True,
                 )
             self._json(result, code=200 if result.get("ok") else 409)
+    elif path == "/imposter/advance":
+        result = pitv_imposter.advance_turn(game_id, token)
+        self._json(result, code=200 if result.get("ok") else 409)
     elif path == "/imposter/vote":
         result = pitv_imposter.set_vote(game_id, token, body.get("target", ""))
         self._json(result, code=200 if result.get("ok") else 409)
