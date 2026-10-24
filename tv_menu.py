@@ -1547,7 +1547,7 @@ def run_imposter(stdscr,players: list[str]) -> None:
                     lines=[f"{x.get('name')}: {x.get('count')} vote(s)" for x in state.get("results",[])]
                     lines += ["",("THE IMPOSTER WAS: "+str(state.get("imposter","?")).upper(),curses.color_pair(1)|curses.A_BOLD),
                               ("THE WORD WAS: "+str(state.get("word","")),curses.color_pair(2)|curses.A_BOLD),
-                              "Select: another round  |  Back: exit"]
+                              "Select: new game (new roles/word)  |  Back: exit"]
                     _imposter_draw_lines(stdscr,"REVEAL",lines)
                 drawn=sig;last_draw=time.time()
             time.sleep(0.08)
