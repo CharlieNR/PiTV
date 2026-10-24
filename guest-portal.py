@@ -1735,6 +1735,46 @@ class Handler(BaseHTTPRequestHandler):
                 code=403,
             )
             return
+        if path.startswith("/admin/"):
+            if not ADMIN:
+                self._json({"ok": False, "error": "not_found"}, code=404)
+                return
+            if not self._session_user():
+                self._json({"ok": False, "error": "not_signed_in"}, code=401)
+                return
+            if path not in ("/admin/temp-pin", "/admin/temp-pin/remove"):
+                self._json({"ok": False, "error": "not_found"}, code=404)
+                return
+            body = self._body()
+            if body is None:
+                self._json({"ok": False, "error": "bad_request"}, code=413)
+                return
+            if path == "/admin/temp-pin":
+                try:
+                    record = pitv_pins.create_temporary_pin(body.get("name", ""))
+                except ValueError as exc:
+                    self._json({"ok": False, "error": "invalid_name", "message": str(exc)}, code=400)
+                    return
+                except Exception as exc:
+                    print(f"Temporary PIN creation failed: {type(exc).__name__}: {exc}", flush=True)
+                    self._json({"ok": False, "error": "create_failed"}, code=500)
+                    return
+                self._json({"ok": True, "pin": record})
+                return
+            name = " ".join(str(body.get("name", "")).split())
+            if not name:
+                self._json({"ok": False, "error": "missing_name"}, code=400)
+                return
+            try:
+                removed = pitv_pins.remove_temporary_pin(name)
+            except Exception as exc:
+                print(f"Temporary PIN removal failed: {type(exc).__name__}: {exc}", flush=True)
+                self._json({"ok": False, "error": "remove_failed"}, code=500)
+                return
+            self._json({"ok": removed, "error": None if removed else "not_found"},
+                       code=200 if removed else 404)
+            return
+
         # Parse /action exactly once. Imposter's QR join page uses the same
         # form-encoded POST mechanism as guest controls, but authenticates with
         # its game-scoped bearer token rather than a guest-login cookie.
