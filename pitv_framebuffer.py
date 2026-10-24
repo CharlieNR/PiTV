@@ -125,19 +125,26 @@ def display_png(path: str, device: str = "/dev/fb0") -> dict[str, Any]:
         red_lut = tuple(_component(v, *red, "red") for v in range(256))
         green_lut = tuple(_component(v, *green, "green") for v in range(256))
         blue_lut = tuple(_component(v, *blue, "blue") for v in range(256))
-        row = bytearray(line_length)
-        with mmap.mmap(fb.fileno(), info["memory_length"], flags=mmap.MAP_SHARED,
-                       prot=mmap.PROT_READ | mmap.PROT_WRITE) as mapped:
-            for y in range(height):
-                row[:] = bytes(line_length)
-                row_base = xoffset * bytes_per_pixel
-                for x in range(width):
-                    r, g, b = pixels[x, y]
-                    packed = red_lut[r] | green_lut[g] | blue_lut[b] | alpha
-                    start = row_base + x * bytes_per_pixel
-                    row[start:start + bytes_per_pixel] = packed.to_bytes(bytes_per_pixel, sys.byteorder)
-                offset = (y + yoffset) * line_length
-                mapped[offset:offset + line_length] = row
+        # Convert the whole screen into RAM first. The previous implementation
+        # wrote each scanline to /dev/fb0 as it converted it, making the image
+        # visibly wipe down the TV. One completed buffer is copied to fbdev.
+        frame = bytearray(info["memory_length"])
+        row_base = xoffset * bytes_per_pixel
+        for y in range(height):
+            row = bytearray(line_length)
+            for x in range(width):
+                r, g, b = pixels[x, y]
+                packed = red_lut[r] | green_lut[g] | blue_lut[b] | alpha
+                start = row_base + x * bytes_per_pixel
+                row[start:start + bytes_per_pixel] = packed.to_bytes(bytes_per_pixel, sys.byteorder)
+            offset = (y + yoffset) * line_length
+            frame[offset:offset + line_length] = row
+
+        with mmap.mmap(
+            fb.fileno(), info["memory_length"],
+            flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE,
+        ) as mapped:
+            mapped[:] = frame
 
     return {
         "device": device,
@@ -222,10 +229,18 @@ def display_png_region(
         green_lut = tuple(_component(v, *green, "green") for v in range(256))
         blue_lut = tuple(_component(v, *blue, "blue") for v in range(256))
 
+        # Stage the complete multi-row strip, retaining all bytes outside the
+        # actual rectangle, then copy it back in one operation. This avoids a
+        # line-by-line visual wipe when the player count changes.
+        first_offset = (yoffset + dest_top) * line_length
+        last_offset = first_offset + dest_height * line_length
+        pixel_start = (xoffset + dest_left) * bytes_per_pixel
+        pixel_end = pixel_start + dest_width * bytes_per_pixel
         with mmap.mmap(
             fb.fileno(), info["memory_length"],
             flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE,
         ) as mapped:
+            staged = bytearray(mapped[first_offset:last_offset])
             for y in range(dest_height):
                 row = bytearray(dest_width * bytes_per_pixel)
                 for x in range(dest_width):
@@ -233,11 +248,9 @@ def display_png_region(
                     packed = red_lut[r] | green_lut[g] | blue_lut[b] | alpha
                     start = x * bytes_per_pixel
                     row[start:start + bytes_per_pixel] = packed.to_bytes(bytes_per_pixel, sys.byteorder)
-                offset = (
-                    (yoffset + dest_top + y) * line_length
-                    + (xoffset + dest_left) * bytes_per_pixel
-                )
-                mapped[offset:offset + len(row)] = row
+                row_start = y * line_length + pixel_start
+                staged[row_start:row_start + len(row)] = row
+            mapped[first_offset:last_offset] = staged
 
     return {
         "device": device,
@@ -266,10 +279,13 @@ def clear_framebuffer(device: str = "/dev/fb0") -> None:
         black_pixel = alpha.to_bytes(bytes_per_pixel, sys.byteorder)
         black_row = black_pixel * width
 
+        frame = bytearray(info["memory_length"])
+        for y in range(height):
+            offset = (yoffset + y) * line_length + xoffset * bytes_per_pixel
+            frame[offset:offset + len(black_row)] = black_row
+
         with mmap.mmap(
             fb.fileno(), info["memory_length"],
             flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE,
         ) as mapped:
-            for y in range(height):
-                offset = (yoffset + y) * line_length + xoffset * bytes_per_pixel
-                mapped[offset:offset + len(black_row)] = black_row
+            mapped[:] = frame
