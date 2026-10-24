@@ -748,7 +748,7 @@ body.locked .card button{{opacity:.35;pointer-events:none;filter:grayscale(1)}}
 .section-label{{text-align:left;font-weight:700;margin-bottom:8px}}
 .admin-status{{min-height:22px;text-align:left;margin:8px 2px;color:#7fd1ff;font-size:14px}}
 .pin-list{{display:grid;gap:9px;margin-top:12px}}
-.pin-row{{width:100%;margin:0;display:flex;align-items:center;gap:12px;text-align:left;padding:14px;background:#151b2b;border:1px solid #29334b}}
+.pin-item{{display:flex;align-items:stretch;gap:8px}}.pin-row{{width:100%;margin:0;display:flex;align-items:center;gap:12px;text-align:left;padding:14px;background:#151b2b;border:1px solid #29334b}}.pin-item .pin-row{{flex:1;min-width:0}}
 .pin-row-copy{{flex:1;min-width:0}}
 .pin-row-name{{display:block;font-weight:700;overflow-wrap:anywhere}}
 .pin-row-meta{{display:block;color:#8b93a7;font-size:12px;margin-top:4px}}
@@ -1364,7 +1364,7 @@ function fillAdminPin(name,pin){
     if(status)status.textContent='Open a player PIN keypad on the TV first, then tap '+name+' again.';
     return;
   }
-  if(!/^\\d{6}$/.test(String(pin))){
+  if(!/^\d{6}$/.test(String(pin))){
     if(status)status.textContent='This PIN is not six digits, so it was not sent.';
     return;
   }
