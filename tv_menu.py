@@ -3930,6 +3930,14 @@ def main(stdscr):
         if current_view != last_view:
             stdscr.clear()
             reset_renderer_state()
+            # A console-based screensaver or game may have overwritten the
+            # framebuffer directly. Force the image UI to repaint even when
+            # the menu state itself has not changed since the previous visit.
+            if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+                try:
+                    pitv_tvui.reset_cache()
+                except Exception:
+                    pass
             should_clear_screen = True
 
             # A code keypad needs raw D-pad/stick navigation; everything else
