@@ -80,6 +80,8 @@ def create_game(game_id, names, join_url):
     names = list(dict.fromkeys(str(n).strip() for n in names if str(n).strip()))
     if len(names) < 3:
         raise ValueError("Imposter needs at least three distinct players.")
+    if len(names) > 8:
+        raise ValueError("Imposter supports at most eight players.")
     state = {
         "active": True, "game_id": game_id, "join_url": join_url, "phase": "join",
         "round_number": 1, "rounds_per_game": 3, "created_at": time.time(),
