@@ -19,6 +19,13 @@ import pitv_imposter
 import pitv_framebuffer
 import pitv_pins
 
+try:
+    UI_VERSION = str(pitv_state.read_value("UI_VERSION", "1")).strip()
+except Exception:
+    UI_VERSION = "1"
+if UI_VERSION not in ("1", "2"):
+    UI_VERSION = "1"
+
 # ─────────────────────────────────────────────────────────────────────
 # OPTIONAL DEPENDENCIES
 # ─────────────────────────────────────────────────────────────────────
@@ -62,6 +69,9 @@ def log_clear() -> None:
         open(LOG_PATH, "w").close()
     except OSError:
         pass
+
+
+log(f"Interface version {UI_VERSION} loaded")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -3232,6 +3242,217 @@ def draw_log_panel(stdscr):
 _LOG_GUARD = LOG_PANEL_LINES + 2
 
 
+# ─────────────────────────────────────────────────────────────────────
+# MODERN TV INTERFACE (version 2)
+# ─────────────────────────────────────────────────────────────────────
+
+MODERN_HOME_ITEMS = [
+    ("FIRE", "SCREENSAVER", "A live, animated text-fire effect."),
+    ("CLOCK + STARS", "AMBIENT", "A large clock over a moving starfield."),
+    ("MATRIX RAIN", "AMBIENT", "A flowing green-code screensaver."),
+    ("STREAM MUSIC", "AIRPLAY", "Stream audio from an Apple device."),
+    ("GAMES", "LIBRARY", "Open the full PIN-protected games library."),
+]
+
+GAME_DESCRIPTIONS = {
+    "IMPOSTER": "A secret-word party game with hidden roles and voting.",
+    "2048": "Slide numbered tiles together to reach 2048.",
+    "BOULDERDASH": "Dig through earth, collect gems and avoid falling rocks.",
+    "BREAKOUT": "Break the wall of bricks with the bouncing ball.",
+    "CURSEOFWAR": "A fast real-time strategy game against the computer.",
+    "DOPEWARS": "Buy low, sell high and try to survive the market.",
+    "CRAWL": "Explore a procedurally generated dungeon.",
+    "MINESWEEPER": "Clear the board without hitting a mine.",
+    "MOONBUGGY": "Drive across the lunar surface and jump the craters.",
+    "NETHACK": "Explore a classic, turn-based roguelike dungeon.",
+    "TICTACTOE": "Play locally against a friend or the computer.",
+    "SNAKE": "Guide the snake, collect food and avoid yourself.",
+    "INVADERS": "Defend the planet from waves of invaders.",
+    "SHOOTER": "A fast arcade space-shooter.",
+    "SUPERTUX": "Run and jump through a colourful platform world.",
+    "TETRIS": "Clear lines in classic falling-block Tetris.",
+    "TYRIAN": "A classic vertical scrolling space-shooter.",
+}
+
+
+def _modern_add(stdscr, y, x, text, attr=0):
+    """Clipped curses drawing; handles small displays and bottom-right cells."""
+    try:
+        height, width = stdscr.getmaxyx()
+        if y < 0 or y >= height or x < 0 or x >= width:
+            return
+        text = str(text)
+        max_len = max(0, width - x)
+        if y == height - 1:
+            max_len = max(0, max_len - 1)
+        text = text[:max_len]
+        if text:
+            stdscr.addstr(y, x, text, attr)
+    except (curses.error, UnicodeError):
+        pass
+
+
+def _modern_columns(width, wanted=4):
+    """Choose a grid width that remains readable on smaller consoles."""
+    can_fit = max(1, (width - 4 + 2) // 14)
+    return max(1, min(int(wanted), can_fit))
+
+
+def _modern_grid_move(index, command, item_count, columns):
+    """Move like a TV app: left/right across tiles, up/down between rows."""
+    if item_count <= 0:
+        return 0
+    index = max(0, min(int(index), item_count - 1))
+    columns = max(1, int(columns))
+    row, col = divmod(index, columns)
+    last_row = (item_count - 1) // columns
+    if command == "LEFT":
+        col = max(0, col - 1)
+    elif command == "RIGHT":
+        col = min(columns - 1, col + 1)
+    elif command == "UP":
+        row = max(0, row - 1)
+    elif command == "DOWN":
+        row = min(last_row, row + 1)
+    return min(item_count - 1, row * columns + col)
+
+
+def _modern_frame(stdscr, section):
+    """Sky/Fire-inspired dark shell with a bright, high-contrast accent."""
+    height, width = stdscr.getmaxyx()
+    stdscr.erase()
+    _modern_add(stdscr, 0, 2, "PiTV", curses.color_pair(8) | curses.A_BOLD)
+    _modern_add(stdscr, 0, 8, "YOUR TV. YOUR WAY.", curses.color_pair(11) | curses.A_DIM)
+    _modern_add(stdscr, 0, max(2, width - 14), "INTERFACE 2", curses.color_pair(12) | curses.A_BOLD)
+    for label, x, key in [("HOME", 2, "HOME"), ("SCREENSAVERS", 11, "SCREENS"), ("GAMES", 27, "GAMES")]:
+        attr = curses.color_pair(9) | curses.A_BOLD if section == key else curses.color_pair(10) | curses.A_BOLD
+        _modern_add(stdscr, 2, x, label, attr)
+    _modern_add(stdscr, 3, 2, "-" * max(1, width - 4), curses.color_pair(10) | curses.A_DIM)
+    return height, width
+
+
+def _modern_draw_grid(stdscr, items, selected_idx, section, columns=4,
+                      top=9, footer="ARROWS: MOVE    SELECT: OPEN    BACK: RETURN"):
+    """Draw a scrollable tile grid. Actions remain in the existing state machine."""
+    height, width = _modern_frame(stdscr, section)
+    if not items:
+        _modern_add(stdscr, 5, 2, "Nothing here yet.", curses.color_pair(11))
+        return
+
+    selected_idx = max(0, min(int(selected_idx), len(items) - 1))
+    selected = items[selected_idx]
+    _modern_add(stdscr, 4, 2, ("FEATURED  /  " + selected[0]).upper(),
+                curses.color_pair(9) | curses.A_BOLD)
+    _modern_add(stdscr, 5, 2, selected[2], curses.color_pair(11))
+    _modern_add(stdscr, 7, 2, "YOUR COLLECTION", curses.color_pair(12) | curses.A_BOLD)
+    _modern_add(stdscr, 7, max(2, width - 31), "USE THE ARROWS TO BROWSE", curses.color_pair(10) | curses.A_DIM)
+
+    columns = _modern_columns(width, columns)
+    margin, gap = 2, 2
+    card_width = max(10, (width - margin * 2 - gap * (columns - 1)) // columns)
+    footer_y = height - (LOG_PANEL_LINES + 2 if log_visible else 1)
+    available_rows = max(1, footer_y - top)
+    rows_visible = max(1, available_rows // 5)
+    total_rows = (len(items) + columns - 1) // columns
+    selected_row = selected_idx // columns
+    first_row = max(0, min(total_rows - rows_visible, selected_row - rows_visible // 2))
+    last_row = min(total_rows, first_row + rows_visible)
+
+    for row in range(first_row, last_row):
+        for col in range(columns):
+            idx = row * columns + col
+            if idx >= len(items):
+                break
+            y = top + (row - first_row) * 5
+            x = margin + col * (card_width + gap)
+            if y + 3 >= footer_y:
+                continue
+            title, tag, _description = items[idx]
+            inner = max(1, card_width - 4)
+            border = "+" + "-" * max(1, card_width - 2) + "+"
+            label_line = "| " + str(title)[:inner].ljust(inner) + " |"
+            tag_line = "| " + str(tag)[:inner].ljust(inner) + " |"
+            if idx == selected_idx:
+                edge_attr = curses.color_pair(8) | curses.A_BOLD
+                text_attr = curses.color_pair(9) | curses.A_BOLD
+            else:
+                edge_attr = curses.color_pair(10) | curses.A_DIM
+                text_attr = curses.color_pair(11)
+            _modern_add(stdscr, y, x, border, edge_attr)
+            _modern_add(stdscr, y + 1, x, label_line, text_attr)
+            _modern_add(stdscr, y + 2, x, tag_line,
+                        text_attr if idx == selected_idx else curses.color_pair(12) | curses.A_DIM)
+            _modern_add(stdscr, y + 3, x, border, edge_attr)
+
+    if first_row > 0:
+        _modern_add(stdscr, top - 1, max(2, width - 14), "UP FOR MORE", curses.color_pair(12) | curses.A_DIM)
+    if last_row < total_rows:
+        _modern_add(stdscr, min(footer_y - 1, top + rows_visible * 5 - 1),
+                    max(2, width - 17), "DOWN FOR MORE", curses.color_pair(12) | curses.A_DIM)
+    _modern_add(stdscr, footer_y, 2, footer, curses.color_pair(11) | curses.A_DIM)
+
+
+def _modern_draw_player_count(stdscr, count, max_count):
+    height, width = _modern_frame(stdscr, "GAMES")
+    _modern_add(stdscr, 4, 2, "IMPOSTER  /  NUMBER OF PLAYERS", curses.color_pair(9) | curses.A_BOLD)
+    _modern_add(stdscr, 6, 2, "Choose how many people are joining the party game.", curses.color_pair(11))
+    _modern_add(stdscr, max(8, height // 2 - 3), max(2, width // 2 - 4),
+                f"<  {count}  >", curses.color_pair(9) | curses.A_BOLD)
+    nums = "   ".join(f"[{n}]" if n == count else str(n) for n in range(3, max_count + 1))
+    _modern_add(stdscr, max(10, height // 2), max(2, (width - len(nums)) // 2),
+                nums, curses.color_pair(12) | curses.A_BOLD)
+    _modern_add(stdscr, height - 2, 2,
+                "UP: ADD PLAYER    DOWN: REMOVE PLAYER    SELECT: CONTINUE    BACK: CANCEL",
+                curses.color_pair(11) | curses.A_DIM)
+
+
+def _modern_draw_keypad(stdscr, game_name, entered, error, is_lock=False):
+    height, width = _modern_frame(stdscr, "GAMES")
+    title = "SYSTEM LOCKED" if is_lock else "PLAYER ACCESS"
+    attr = curses.color_pair(1) | curses.A_BOLD if is_lock else curses.color_pair(9) | curses.A_BOLD
+    _modern_add(stdscr, 4, 2, title, attr)
+    _modern_add(stdscr, 5, 2, "ENTER EMERGENCY CODE" if is_lock else ("UNLOCK  /  " + str(game_name)), curses.color_pair(11))
+    masked = " ".join("*" if i < len(entered) and entered[i] != "_" else "_" for i in range(6))
+    _modern_add(stdscr, 7, max(2, (width - len(masked) - 5) // 2),
+                "PIN   " + masked, curses.color_pair(9) | curses.A_BOLD)
+    if error:
+        _modern_add(stdscr, 8, max(2, (width - len(error)) // 2), error, curses.color_pair(1) | curses.A_BOLD)
+
+    card_width = max(8, min(14, (width - 8) // 3))
+    grid_width = card_width * 3 + 4
+    start_x = max(2, (width - grid_width) // 2)
+    start_y = 9
+    for row, keys in enumerate(KEYPAD_LAYOUT):
+        y = start_y + row * 3
+        for col, key in enumerate(keys):
+            x = start_x + col * (card_width + 2)
+            if y + 2 >= height - 2:
+                continue
+            edge = "+" + "-" * (card_width - 2) + "+"
+            label = "| " + str(key).center(card_width - 4) + " |"
+            chosen = row == keypad_row and col == keypad_col
+            edge_attr = curses.color_pair(8) | curses.A_BOLD if chosen else curses.color_pair(10)
+            label_attr = curses.color_pair(9) | curses.A_BOLD if chosen else curses.color_pair(11)
+            _modern_add(stdscr, y, x, edge, edge_attr)
+            _modern_add(stdscr, y + 1, x, label, label_attr)
+            _modern_add(stdscr, y + 2, x, edge, edge_attr)
+
+    hint = "ARROWS: MOVE    SELECT: ENTER    BACK: DELETE / RETURN"
+    if is_lock:
+        hint = "ENTER THE EMERGENCY CODE TO UNLOCK THE SYSTEM"
+    _modern_add(stdscr, height - 2, 2, hint, curses.color_pair(11) | curses.A_DIM)
+
+
+def draw_ttt_mode(stdscr):
+    items = [
+        ("1 PLAYER", "VS COMPUTER", "Play against the built-in computer opponent."),
+        ("2 PLAYER", "LOCAL MULTIPLAYER", "Take turns on the same screen."),
+    ]
+    _modern_draw_grid(stdscr, items, ttt_sel, "GAMES", columns=2,
+                      footer="LEFT / RIGHT: CHOOSE    SELECT: CONFIRM    BACK: RETURN")
+
+
+
 def _draw_card_list(stdscr, items, selected_idx, title, subtitle, color):
     max_y, max_x = stdscr.getmaxyx()
     rule = "="*min(len(title)+6, max_x-4)
@@ -3303,6 +3524,9 @@ def _draw_card_list(stdscr, items, selected_idx, title, subtitle, color):
 
 
 def draw_main_menu(stdscr, sel):
+    if UI_VERSION == "2":
+        _modern_draw_grid(stdscr, MODERN_HOME_ITEMS, sel, "HOME", columns=4)
+        return
     _draw_card_list(
         stdscr, [label for label,_,_ in ART_OPTIONS], sel,
         title    = "PI DISPLAY CONTROLLER",
@@ -3321,6 +3545,21 @@ def draw_games_menu(stdscr, sel):
         return "  [" + "/".join(tags) + "]"
 
     labels = [label + badge(key, is2p) for label,_,key,is2p in GAME_OPTIONS]
+    if UI_VERSION == "2":
+        modern_items = []
+        for label, _cmd, key, is2p in GAME_OPTIONS:
+            if key not in ("SNAKE", "TICTACTOE", "IMPOSTER") and not resolve_binary(GAME_KEYS.get(key, [key])[0]):
+                tag = "NOT INSTALLED"
+            elif key == "IMPOSTER":
+                tag = "PARTY GAME"
+            elif is2p:
+                tag = "2P / PIN"
+            else:
+                tag = "PIN REQUIRED"
+            modern_items.append((label, tag, GAME_DESCRIPTIONS.get(key, "Open this PiTV game.")))
+        _modern_draw_grid(stdscr, modern_items, sel, "GAMES", columns=4,
+                          footer="ARROWS: BROWSE    SELECT: OPEN    BACK: HOME")
+        return
     _draw_card_list(
         stdscr, labels, sel,
         title    = "GAMES LIBRARY",
@@ -3331,6 +3570,9 @@ def draw_games_menu(stdscr, sel):
 
 def draw_imposter_count(stdscr, count, max_count):
     """A single-value selector; Up adds one player and Down removes one."""
+    if UI_VERSION == "2":
+        _modern_draw_player_count(stdscr, count, max_count)
+        return
     h, w = stdscr.getmaxyx()
     stdscr.erase()
     _imposter_center(stdscr, 2, "IMPOSTER — NUMBER OF PLAYERS",
@@ -3351,6 +3593,16 @@ def draw_imposter_count(stdscr, count, max_count):
 
 
 def draw_duration_menu(stdscr, art_label, sel):
+    if UI_VERSION == "2":
+        items = [
+            ("INDEFINITE", "NO TIME LIMIT", "Keep running until you leave the screen."),
+            ("30 SECONDS", "QUICK SESSION", "Return automatically after half a minute."),
+            ("1 MINUTE", "SHORT SESSION", "Return automatically after one minute."),
+            ("5 MINUTES", "LONG SESSION", "Return automatically after five minutes."),
+        ]
+        _modern_draw_grid(stdscr, items, sel, "SCREENS", columns=4,
+                          footer="LEFT / RIGHT: CHOOSE    SELECT: START    BACK: HOME")
+        return
     _draw_card_list(
         stdscr, [label for label,_ in DURATION_OPTIONS], sel,
         title    = f"DURATION: {art_label}",
@@ -3418,6 +3670,9 @@ def draw_pair_overlay(stdscr):
 def draw_keypad(stdscr, game_name, entered, error, is_lock=False):
     """On-screen numpad. D-pad/joystick move, A enters, B deletes/back."""
     global keypad_row, keypad_col, lock_entered
+    if UI_VERSION == "2":
+        _modern_draw_keypad(stdscr, game_name, entered, error, is_lock=is_lock)
+        return
     max_y, max_x = stdscr.getmaxyx()
     stdscr.erase()
 
@@ -3556,6 +3811,58 @@ def _handle_entered_game_pin(stdscr, entered: str) -> None:
         keypad_entered=""
 
 
+
+
+def _activate_game_selection(stdscr):
+    global current_view, pending_game_key, pending_game_cmd, pending_game_2p
+    global imposter_count_options, imposter_count_selected
+    global imposter_pin_stage, imposter_players, keypad_entered, keypad_error
+    global ttt_sel, ttt_stage, ttt_p1
+
+    _label, game_cmd, game_key, is2p = GAME_OPTIONS[selected_game_idx]
+    pending_game_key = game_key
+    pending_game_cmd = game_cmd
+    pending_game_2p = is2p
+    if game_key == "IMPOSTER":
+        pins = load_pins()
+        emergency = pitv_secrets.emergency_code()
+        codes = {str(code) for code in pins.values()
+                 if str(code).isdigit() and len(str(code)) == 6
+                 and not hmac.compare_digest(str(code), emergency)}
+        max_players = min(8, len(codes))
+        if max_players < 3:
+            show_message(stdscr, [
+                "IMPOSTER NEEDS 3+ PLAYERS",
+                "Assign unique six-digit PINs first.",
+                "Use: screen pin assign <name> <pin>",
+            ], color_pair=1, duration=3.0)
+            current_view = "GAMES_MENU"
+        else:
+            imposter_count_options = list(range(3, max_players + 1))
+            imposter_count_selected = 0
+            current_view = "IMPOSTER_COUNT"
+    elif game_key == "TICTACTOE":
+        ttt_sel = 0
+        current_view = "TTT_MODE"
+    else:
+        ttt_stage = 1
+        ttt_p1 = ""
+        keypad_entered = keypad_error = ""
+        current_view = "KEYPAD"
+
+
+def _activate_home_selection(stdscr):
+    global current_view
+    _label, art_type, art_key = ART_OPTIONS[selected_art_idx]
+    if art_key == "MIRROR":
+        run_mirror(stdscr)
+        current_view = "MENU"
+    elif art_key == "GAMES":
+        current_view = "GAMES_MENU"
+    else:
+        current_view = "DURATION_SELECT"
+
+
 def main(stdscr):
     global current_view, selected_art_idx, selected_game_idx, selected_dur_idx
     global imposter_count_options, imposter_count_selected, imposter_target_count
@@ -3582,6 +3889,16 @@ def main(stdscr):
     try:
         curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_WHITE)
         curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_BLACK)
+    except curses.error:
+        pass
+    try:
+        # Dark-console palette with a bright blue selected tile. Version 1
+        # retains its existing palette and renderer.
+        curses.init_pair(8, curses.COLOR_CYAN, curses.COLOR_BLUE)
+        curses.init_pair(9, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        curses.init_pair(10, curses.COLOR_CYAN, -1)
+        curses.init_pair(11, curses.COLOR_WHITE, -1)
+        curses.init_pair(12, curses.COLOR_YELLOW, -1)
     except curses.error:
         pass
 
@@ -3751,111 +4068,145 @@ def main(stdscr):
 
             # ── View-specific handling ───────────────────────────────
             if current_view == "MENU":
-                if cmd == "UP":
-                    selected_art_idx = (selected_art_idx-1) % len(ART_OPTIONS)
-                elif cmd == "DOWN":
-                    selected_art_idx = (selected_art_idx+1) % len(ART_OPTIONS)
-                elif cmd in ("SELECT","RIGHT"):
-                    _, art_type, art_key = ART_OPTIONS[selected_art_idx]
-                    if art_key == "MIRROR":
-                        run_mirror(stdscr)
-                        current_view = "MENU"
-                    elif art_key == "GAMES": current_view = "GAMES_MENU"
-                    else: current_view = "DURATION_SELECT"
-                elif cmd in ("BACK","LEFT"):
-                    pass  # already at root
+                if UI_VERSION == "2":
+                    if cmd in ("UP", "DOWN", "LEFT", "RIGHT"):
+                        selected_art_idx = _modern_grid_move(
+                            selected_art_idx, cmd, len(ART_OPTIONS), _modern_columns(max_x, 4))
+                    elif cmd == "SELECT":
+                        _activate_home_selection(stdscr)
+                    elif cmd == "BACK":
+                        pass
+                else:
+                    if cmd == "UP":
+                        selected_art_idx = (selected_art_idx-1) % len(ART_OPTIONS)
+                    elif cmd == "DOWN":
+                        selected_art_idx = (selected_art_idx+1) % len(ART_OPTIONS)
+                    elif cmd in ("SELECT","RIGHT"):
+                        _activate_home_selection(stdscr)
+                    elif cmd in ("BACK","LEFT"):
+                        pass  # already at root
 
             elif current_view == "DURATION_SELECT":
-                if cmd == "UP":
-                    selected_dur_idx = (selected_dur_idx-1) % len(DURATION_OPTIONS)
-                elif cmd == "DOWN":
-                    selected_dur_idx = (selected_dur_idx+1) % len(DURATION_OPTIONS)
-                elif cmd in ("BACK","LEFT"):
-                    current_view = "MENU"
-                elif cmd in ("SELECT","RIGHT"):
-                    _, art_type, art_key = ART_OPTIONS[selected_art_idx]
-                    dur_sec = DURATION_OPTIONS[selected_dur_idx][1]
-                    if art_key in EXTERNAL_CMDS:
-                        run_external_art(stdscr, EXTERNAL_CMDS[art_key], dur_sec)
+                if UI_VERSION == "2":
+                    if cmd in ("LEFT", "UP"):
+                        selected_dur_idx = max(0, selected_dur_idx - 1)
+                    elif cmd in ("RIGHT", "DOWN"):
+                        selected_dur_idx = min(len(DURATION_OPTIONS) - 1, selected_dur_idx + 1)
+                    elif cmd == "BACK":
                         current_view = "MENU"
-                    else:
-                        active_art_type = art_type
-                        art_stop_time   = time.time()+dur_sec if dur_sec else None
-                        current_view    = "ART_RUNNING"
+                    elif cmd == "SELECT":
+                        _, art_type, art_key = ART_OPTIONS[selected_art_idx]
+                        dur_sec = DURATION_OPTIONS[selected_dur_idx][1]
+                        if art_key in EXTERNAL_CMDS:
+                            run_external_art(stdscr, EXTERNAL_CMDS[art_key], dur_sec)
+                            current_view = "MENU"
+                        else:
+                            active_art_type = art_type
+                            art_stop_time = time.time() + dur_sec if dur_sec else None
+                            current_view = "ART_RUNNING"
+                else:
+                    if cmd == "UP":
+                        selected_dur_idx = (selected_dur_idx-1) % len(DURATION_OPTIONS)
+                    elif cmd == "DOWN":
+                        selected_dur_idx = (selected_dur_idx+1) % len(DURATION_OPTIONS)
+                    elif cmd in ("BACK","LEFT"):
+                        current_view = "MENU"
+                    elif cmd in ("SELECT","RIGHT"):
+                        _, art_type, art_key = ART_OPTIONS[selected_art_idx]
+                        dur_sec = DURATION_OPTIONS[selected_dur_idx][1]
+                        if art_key in EXTERNAL_CMDS:
+                            run_external_art(stdscr, EXTERNAL_CMDS[art_key], dur_sec)
+                            current_view = "MENU"
+                        else:
+                            active_art_type = art_type
+                            art_stop_time = time.time()+dur_sec if dur_sec else None
+                            current_view = "ART_RUNNING"
 
             elif current_view == "IMPOSTER_COUNT":
-                if cmd == "UP":
-                    # The number is a bounded scroll wheel: Up adds a player.
-                    imposter_count_selected = min(
-                        imposter_count_selected + 1,
-                        max(0, len(imposter_count_options) - 1))
-                elif cmd == "DOWN":
-                    # Down removes a player, never going below three.
-                    imposter_count_selected = max(0, imposter_count_selected - 1)
-                elif cmd in ("BACK","LEFT"):
-                    current_view = "GAMES_MENU"
-                elif cmd in ("SELECT","RIGHT"):
-                    if imposter_count_options:
-                        imposter_target_count = imposter_count_options[imposter_count_selected]
-                        imposter_pin_stage = 1
-                        imposter_players = []
-                        keypad_entered = keypad_error = ""
-                        keypad_row = keypad_col = 0
-                        current_view = "KEYPAD"
-                        _imposter_prepare_join_screen(imposter_target_count)
-                    else:
+                if UI_VERSION == "2":
+                    if cmd == "UP":
+                        imposter_count_selected = min(
+                            imposter_count_selected + 1, max(0, len(imposter_count_options) - 1))
+                    elif cmd == "DOWN":
+                        imposter_count_selected = max(0, imposter_count_selected - 1)
+                    elif cmd == "BACK":
                         current_view = "GAMES_MENU"
+                    elif cmd == "SELECT":
+                        if imposter_count_options:
+                            imposter_target_count = imposter_count_options[imposter_count_selected]
+                            imposter_pin_stage = 1
+                            imposter_players = []
+                            keypad_entered = keypad_error = ""
+                            keypad_row = keypad_col = 0
+                            current_view = "KEYPAD"
+                            _imposter_prepare_join_screen(imposter_target_count)
+                        else:
+                            current_view = "GAMES_MENU"
+                else:
+                    if cmd == "UP":
+                        imposter_count_selected = min(
+                            imposter_count_selected + 1,
+                            max(0, len(imposter_count_options) - 1))
+                    elif cmd == "DOWN":
+                        imposter_count_selected = max(0, imposter_count_selected - 1)
+                    elif cmd in ("BACK","LEFT"):
+                        current_view = "GAMES_MENU"
+                    elif cmd in ("SELECT","RIGHT"):
+                        if imposter_count_options:
+                            imposter_target_count = imposter_count_options[imposter_count_selected]
+                            imposter_pin_stage = 1
+                            imposter_players = []
+                            keypad_entered = keypad_error = ""
+                            keypad_row = keypad_col = 0
+                            current_view = "KEYPAD"
+                            _imposter_prepare_join_screen(imposter_target_count)
+                        else:
+                            current_view = "GAMES_MENU"
 
             elif current_view == "GAMES_MENU":
-                if cmd == "UP":
-                    selected_game_idx = (selected_game_idx-1) % len(GAME_OPTIONS)
-                elif cmd == "DOWN":
-                    selected_game_idx = (selected_game_idx+1) % len(GAME_OPTIONS)
-                elif cmd in ("BACK","LEFT"):
-                    current_view = "MENU"
-                elif cmd in ("SELECT","RIGHT"):
-                    label, game_cmd, game_key, is2p = GAME_OPTIONS[selected_game_idx]
-                    pending_game_key = game_key
-                    pending_game_cmd = game_cmd
-                    pending_game_2p  = is2p
-                    if game_key == "IMPOSTER":
-                        pins = load_pins()
-                        emergency = pitv_secrets.emergency_code()
-                        codes = {str(code) for code in pins.values()
-                                 if str(code).isdigit() and len(str(code)) == 6
-                                 and not hmac.compare_digest(str(code), emergency)}
-                        max_players = min(8,len(codes))
-                        if max_players < 3:
-                            show_message(stdscr,["IMPOSTER NEEDS 3+ PLAYERS","Assign unique six-digit PINs first.","Use: screen pin assign <name> <pin>"],color_pair=1,duration=3.0)
-                            current_view = "GAMES_MENU"
-                        else:
-                            imposter_count_options=list(range(3,max_players+1))
-                            imposter_count_selected=0
-                            current_view="IMPOSTER_COUNT"
-                    elif game_key == "TICTACTOE":
-                        # Choose 1-player (vs computer) or 2-player first.
-                        ttt_sel = 0
-                        current_view = "TTT_MODE"
-                    else:
-                        # Every game needs a PIN, so go via the keypad. A 2-player
-                        # game (e.g. Tetris) collects BOTH players' PINs first —
-                        # stage 1 = P1, stage 2 = P2 — then launches.
+                if UI_VERSION == "2":
+                    if cmd in ("UP", "DOWN", "LEFT", "RIGHT"):
+                        selected_game_idx = _modern_grid_move(
+                            selected_game_idx, cmd, len(GAME_OPTIONS), _modern_columns(max_x, 4))
+                    elif cmd == "BACK":
+                        current_view = "MENU"
+                    elif cmd == "SELECT":
+                        _activate_game_selection(stdscr)
+                else:
+                    if cmd == "UP":
+                        selected_game_idx = (selected_game_idx-1) % len(GAME_OPTIONS)
+                    elif cmd == "DOWN":
+                        selected_game_idx = (selected_game_idx+1) % len(GAME_OPTIONS)
+                    elif cmd in ("BACK","LEFT"):
+                        current_view = "MENU"
+                    elif cmd in ("SELECT","RIGHT"):
+                        _activate_game_selection(stdscr)
+
+            elif current_view == "TTT_MODE":
+                if UI_VERSION == "2":
+                    if cmd in ("LEFT", "RIGHT"):
+                        ttt_sel = _modern_grid_move(ttt_sel, cmd, 2, 2)
+                    elif cmd in ("UP", "DOWN"):
+                        ttt_sel ^= 1
+                    elif cmd == "BACK":
+                        current_view = "GAMES_MENU"
+                    elif cmd == "SELECT":
+                        ttt_mode  = "1P" if ttt_sel == 0 else "2P"
                         ttt_stage = 1
                         ttt_p1    = ""
                         keypad_entered = keypad_error = ""
                         current_view = "KEYPAD"
-
-            elif current_view == "TTT_MODE":
-                if cmd in ("UP", "DOWN"):
-                    ttt_sel ^= 1
-                elif cmd in ("BACK", "LEFT"):
-                    current_view = "GAMES_MENU"
-                elif cmd in ("SELECT", "RIGHT"):
-                    ttt_mode  = "1P" if ttt_sel == 0 else "2P"
-                    ttt_stage = 1
-                    ttt_p1    = ""
-                    keypad_entered = keypad_error = ""
-                    current_view = "KEYPAD"
+                else:
+                    if cmd in ("UP", "DOWN"):
+                        ttt_sel ^= 1
+                    elif cmd in ("BACK", "LEFT"):
+                        current_view = "GAMES_MENU"
+                    elif cmd in ("SELECT", "RIGHT"):
+                        ttt_mode  = "1P" if ttt_sel == 0 else "2P"
+                        ttt_stage = 1
+                        ttt_p1    = ""
+                        keypad_entered = keypad_error = ""
+                        current_view = "KEYPAD"
 
             elif current_view == "KEYPAD":
                 verify = False
@@ -3942,10 +4293,13 @@ def main(stdscr):
             )
 
         elif current_view == "TTT_MODE":
-            _draw_card_list(stdscr, ["1 PLAYER  (vs Computer)", "2 PLAYER"],
-                            ttt_sel, title="NOUGHTS & CROSSES",
-                            subtitle="  A/Right: choose    B/Left: back",
-                            color=curses.color_pair(5))
+            if UI_VERSION == "2":
+                draw_ttt_mode(stdscr)
+            else:
+                _draw_card_list(stdscr, ["1 PLAYER  (vs Computer)", "2 PLAYER"],
+                                ttt_sel, title="NOUGHTS & CROSSES",
+                                subtitle="  A/Right: choose    B/Left: back",
+                                color=curses.color_pair(5))
 
         elif current_view == "KEYPAD":
             name = GAME_OPTIONS[selected_game_idx][0]
