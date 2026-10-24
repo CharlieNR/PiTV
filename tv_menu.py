@@ -1315,11 +1315,14 @@ def _imposter_center(stdscr,y,text,attr=0):
 def _imposter_draw_lines(stdscr,title,lines):
     h,w=stdscr.getmaxyx()
     stdscr.erase();_imposter_center(stdscr,1,title,curses.color_pair(5)|curses.A_BOLD)
+    footer = ("Back: previous player" if
+              title.startswith("IMPOSTER — ROUND ") or title.startswith("ROUND ")
+              or title == "VOTE NOW" else "Back: end game")
     y=max(3,(h-len(lines))//2)
     for i,item in enumerate(lines[:h-4]):
         text,attr=item if isinstance(item,tuple) else (item,curses.color_pair(3))
         _imposter_center(stdscr,y+i,text,attr)
-    _imposter_center(stdscr,h-1,"Back: end game",curses.color_pair(3)|curses.A_DIM)
+    _imposter_center(stdscr,h-1,footer,curses.color_pair(3)|curses.A_DIM)
     stdscr.refresh()
 
 
@@ -1404,14 +1407,15 @@ def run_imposter(stdscr,players: list[str]) -> None:
                 if cmd == "HOME":
                     pitv_imposter.end_game(game_id)
                     return
-                if cmd == "BACK" and phase in ("round", "round_complete"):
+                if cmd == "BACK" and phase in ("round", "round_complete", "vote"):
                     result = pitv_imposter.rewind_turn(game_id)
                     if result.get("ok"):
+                        choice = 0
                         log(f"Imposter turn rewound to {result.get('current_turn', '?')}")
                     else:
                         log("Imposter Back ignored: no earlier player in this round.")
                     # Re-read state before handling any more queued keys, because
-                    # Back can move the game from round_complete back into round.
+                    # Back can move the game from round_complete or vote back into round.
                     break
                 if cmd == "BACK":
                     pitv_imposter.end_game(game_id)
