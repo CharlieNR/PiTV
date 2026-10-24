@@ -1165,7 +1165,7 @@ def _imposter_render_join_image(url, joined, total):
         centered(url, 690, url_font, (158, 177, 204))
 
         temporary = f"{IMPOSTER_JOIN_IMAGE}.{os.getpid()}.tmp"
-        canvas.save(temporary, format="PNG", optimize=True)
+        canvas.save(temporary, format="PNG", optimize=False, compress_level=1)
         os.replace(temporary, IMPOSTER_JOIN_IMAGE)
         return IMPOSTER_JOIN_IMAGE
     except Exception as e:
@@ -1178,7 +1178,48 @@ def _imposter_render_join_image(url, joined, total):
         return None
 
 
-def _imposter_start_join_image(stdscr, image_path):
+
+_imposter_preparation_lock = threading.Lock()
+_imposter_preparation = None
+
+
+def _imposter_prepare_join_screen(total: int) -> None:
+    """Prepare the game's QR PNG and packed framebuffer before the final PIN."""
+    global _imposter_preparation
+    game_id = secrets.token_urlsafe(9)
+    url = f"http://{_imposter_local_ip()}:8080/imposter/join?g={game_id}"
+    item = {
+        "game_id": game_id, "url": url, "total": int(total),
+        "image_path": None, "prepared": None, "error": None, "thread": None,
+    }
+    with _imposter_preparation_lock:
+        _imposter_preparation = item
+
+    def prepare():
+        started = time.monotonic()
+        try:
+            image_path = _imposter_render_join_image(url, 0, int(total))
+            if not image_path:
+                raise RuntimeError("QR PNG generation returned no image.")
+            frame = pitv_framebuffer.prepare_png(image_path, "/dev/fb0")
+            with _imposter_preparation_lock:
+                if _imposter_preparation is item:
+                    item["image_path"] = image_path
+                    item["prepared"] = frame
+            log(f"Imposter QR pre-render ready before PIN completion in {time.monotonic()-started:.2f}s")
+        except Exception as e:
+            with _imposter_preparation_lock:
+                if _imposter_preparation is item:
+                    item["error"] = f"{type(e).__name__}: {e}"
+            log(f"Imposter QR pre-render failed: {type(e).__name__}: {e}")
+
+    thread = threading.Thread(target=prepare, name="pitv-imposter-qr-prepare", daemon=True)
+    item["thread"] = thread
+    thread.start()
+    log(f"Imposter QR pre-render started for {int(total)} players")
+
+
+def _imposter_start_join_image(stdscr, image_path, prepared=None):
     """Draw the generated PNG directly to /dev/fb0 without launching fbi."""
     if not os.path.exists("/dev/fb0"):
         log("Imposter QR cannot be displayed: /dev/fb0 does not exist.")
@@ -1193,11 +1234,12 @@ def _imposter_start_join_image(stdscr, image_path):
         curses.def_prog_mode()
         curses.endwin()
         _reset_terminal()
-        info = pitv_framebuffer.display_png(image_path, "/dev/fb0")
+        info = (pitv_framebuffer.display_prepared_frame(prepared, "/dev/fb0")
+                if prepared is not None else pitv_framebuffer.display_png(image_path, "/dev/fb0"))
         log(
             "Imposter QR PNG written directly to framebuffer: "
             f"{info['width']}x{info['height']} at {info['bits_per_pixel']} bpp, "
-            f"stride={info['stride']} bytes; no external viewer was launched."
+            f"stride={info['stride']} bytes; page_flip={info.get('page_flip', False)}."
         )
         # True is a sentinel indicating that the framebuffer contains the PNG;
         # unlike fbi, no child process must remain alive to keep it visible.
@@ -1284,9 +1326,29 @@ def _imposter_draw_results(stdscr,results,progress):
 
 
 def run_imposter(stdscr,players: list[str]) -> None:
-    global controller_mode
-    game_id=secrets.token_urlsafe(9)
-    url=f"http://{_imposter_local_ip()}:8080/imposter/join?g={game_id}"
+    global controller_mode, _imposter_preparation
+    prep_item = None
+    with _imposter_preparation_lock:
+        if _imposter_preparation and _imposter_preparation.get("total") == len(players):
+            prep_item = _imposter_preparation
+    if prep_item is not None:
+        prep_thread = prep_item.get("thread")
+        if prep_thread is not None:
+            prep_thread.join()
+        with _imposter_preparation_lock:
+            if _imposter_preparation is prep_item:
+                _imposter_preparation = None
+        game_id = prep_item["game_id"]
+        url = prep_item["url"]
+        prepared_join_path = prep_item.get("image_path")
+        prepared_join_frame = prep_item.get("prepared")
+        if prep_item.get("error"):
+            log(f"Imposter QR pre-render reported: {prep_item['error']}")
+    else:
+        game_id=secrets.token_urlsafe(9)
+        url=f"http://{_imposter_local_ip()}:8080/imposter/join?g={game_id}"
+        prepared_join_path = None
+        prepared_join_frame = None
     try:pitv_imposter.create_game(game_id,players,url)
     except ValueError as e:
         show_message(stdscr,["IMPOSTER",str(e)],color_pair=1,duration=3.0);return
@@ -1336,44 +1398,66 @@ def run_imposter(stdscr,players: list[str]) -> None:
             if due and (sig!=drawn or phase in ("vote","results") or join_needs_refresh):
                 if phase=="join":
                     if join_needs_refresh:
-                        image_path=_imposter_render_join_image(url,joined_count,len(players))
-                        join_attempted_count=joined_count
-                        if image_path and join_viewer is not None:
-                            # Keep the QR and the rest of the screen untouched.
-                            # Only the "Players connected" status line changes.
-                            try:
-                                info=pitv_framebuffer.display_png_region(
-                                    image_path, "/dev/fb0", (0, 615, 1280, 654))
-                                join_image_joined=joined_count
-                                log(
-                                    "Imposter player count updated without redrawing QR: "
-                                    f"{joined_count}/{len(players)}; "
-                                    f"band={info['width']}x{info['height']}."
-                                )
-                            except Exception as e:
-                                join_image_joined=joined_count
-                                log(
-                                    "Imposter player-count framebuffer update failed: "
-                                    f"{type(e).__name__}: {e}. Keeping the existing QR on screen."
-                                )
-                        elif image_path:
-                            join_viewer=_imposter_start_join_image(stdscr,image_path)
+                        if (join_viewer is None and joined_count == 0
+                                and prepared_join_path and prepared_join_frame is not None):
+                            # QR generation and the expensive pixel conversion finished
+                            # while player PINs were being entered. Showing it now is
+                            # just a prepared-buffer write/page flip.
+                            image_path = prepared_join_path
+                            join_attempted_count = joined_count
+                            join_viewer = _imposter_start_join_image(
+                                stdscr, image_path, prepared_join_frame)
+                            prepared_join_frame = None
                             if join_viewer is not None:
-                                join_image_joined=joined_count
+                                join_image_joined = joined_count
                             else:
                                 _imposter_draw_lines(stdscr,"JOIN QR DISPLAY ERROR",[
-                                    "The QR PNG was generated, but direct framebuffer drawing failed.",
+                                    "The QR PNG was prepared, but direct framebuffer drawing failed.",
                                     "Check /tmp/pitv.log for the exact device or pixel-format error.",
                                     url,
                                     "No character-based QR substitute is being shown.",
                                 ])
-                        elif join_viewer is None:
-                            _imposter_draw_lines(stdscr,"QR IMAGE GENERATION ERROR",[
-                                "PiTV could not create the QR PNG image.",
-                                "Check /tmp/pitv.log for the Python QR/Pillow error.",
-                                url,
-                                "No character-based QR substitute is being shown.",
-                            ])
+                        else:
+                            image_path=_imposter_render_join_image(url,joined_count,len(players))
+                            join_attempted_count=joined_count
+                            if image_path and join_viewer is not None:
+                                # Re-render the count text, then update only that narrow
+                                # band. The framebuffer helper uses page-flipping where
+                                # supported so the number changes as a snap, not a wipe.
+                                try:
+                                    info=pitv_framebuffer.display_png_region(
+                                        image_path, "/dev/fb0", (0, 615, 1280, 654))
+                                    join_image_joined=joined_count
+                                    log(
+                                        "Imposter player count updated without redrawing QR: "
+                                        f"{joined_count}/{len(players)}; "
+                                        f"band={info['width']}x{info['height']}; "
+                                        f"page_flip={info.get('page_flip', False)}."
+                                    )
+                                except Exception as e:
+                                    join_image_joined=joined_count
+                                    log(
+                                        "Imposter player-count framebuffer update failed: "
+                                        f"{type(e).__name__}: {e}. Keeping the existing QR on screen."
+                                    )
+                            elif image_path:
+                                join_viewer=_imposter_start_join_image(stdscr,image_path)
+                                if join_viewer is not None:
+                                    join_image_joined=joined_count
+                                else:
+                                    _imposter_draw_lines(stdscr,"JOIN QR DISPLAY ERROR",[
+                                        "The QR PNG was generated, but direct framebuffer drawing failed.",
+                                        "Check /tmp/pitv.log for the exact device or pixel-format error.",
+                                        url,
+                                        "No character-based QR substitute is being shown.",
+                                    ])
+                            elif join_viewer is None:
+                                _imposter_draw_lines(stdscr,"QR IMAGE GENERATION ERROR",[
+                                    "PiTV could not create the QR PNG image.",
+                                    "Check /tmp/pitv.log for the Python QR/Pillow error.",
+                                    url,
+                                    "No character-based QR substitute is being shown.",
+                                ])
                 elif phase=="choose_word":
                     _imposter_draw_lines(stdscr,"IMPOSTER",["All players are connected.","The word is being chosen on a phone.","The imposter does not receive the word.","Waiting for the word chooser to press Enter."])
                 elif phase=="round":
@@ -3486,6 +3570,7 @@ def main(stdscr):
                         keypad_entered = keypad_error = ""
                         keypad_row = keypad_col = 0
                         current_view = "KEYPAD"
+                        _imposter_prepare_join_screen(imposter_target_count)
                     else:
                         current_view = "GAMES_MENU"
 
