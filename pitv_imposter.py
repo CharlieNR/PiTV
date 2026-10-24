@@ -82,7 +82,7 @@ def create_game(game_id, names, join_url):
         raise ValueError("Imposter needs at least three distinct players.")
     state = {
         "active": True, "game_id": game_id, "join_url": join_url, "phase": "join",
-        "round_number": 1, "created_at": time.time(),
+        "round_number": 1, "rounds_per_game": 3, "created_at": time.time(),
         "players": [{"name": n, "joined": False, "token": "", "role": "", "vote": ""} for n in names],
         "imposter": "", "word_picker": "", "word": "", "turn_index": 0,
         "votes": {}, "results": [], "vote_ends_at": 0, "reveal_at": 0, "error": ""
@@ -135,6 +135,7 @@ def player_view(game_id, token):
         "you": str(p.get("name", "")), "role": str(p.get("role", "")), "word": word,
         "players": names, "joined_count": joined, "player_count": len(names),
         "round_number": int(s.get("round_number", 1) or 1),
+        "rounds_per_game": int(s.get("rounds_per_game", 3) or 3),
         "current_turn": names[idx] if 0 <= idx < len(names) else "",
         "vote_ends_at": float(s.get("vote_ends_at", 0) or 0),
         "my_vote": str(s.get("votes", {}).get(p.get("name", ""), "")),
@@ -165,21 +166,87 @@ def set_vote(game_id, token, target):
         p["vote"] = target
         return {"ok": True, "target": target}
 
-def advance_turn(game_id):
+def _begin_vote(s, now=None):
+    """Enter the standard timed vote, clearing any votes from an earlier phase."""
+    now = time.time() if now is None else now
+    s["votes"], s["results"] = {}, []
+    for player in s.get("players", []):
+        player["vote"] = ""
+    s["vote_ends_at"] = now + 15
+    s["reveal_at"] = 0
+    s["phase"] = "vote"
+
+
+def advance_turn(game_id, token=None):
+    """Advance the host's turn, or advance only for the authenticated current player."""
     with _transaction(True) as s:
         if not s.get("active") or s.get("game_id") != game_id or s.get("phase") != "round":
-            return
+            return {"ok": False, "error": "turn_not_active"}
+        players = s.get("players", [])
+        if not players:
+            return {"ok": False, "error": "no_players"}
         i = int(s.get("turn_index", 0) or 0)
-        if i + 1 >= len(s.get("players", [])):
-            s["phase"] = "round_complete"
-        else:
+        i = max(0, min(i, len(players) - 1))
+        if token is not None:
+            player = _player_for_token(s, token)
+            if not player or player.get("name") != players[i].get("name"):
+                return {"ok": False, "error": "not_your_turn"}
+        if i + 1 < len(players):
             s["turn_index"] = i + 1
+        else:
+            rounds_per_game = max(1, int(s.get("rounds_per_game", 3) or 3))
+            if int(s.get("round_number", 1) or 1) >= rounds_per_game:
+                _begin_vote(s)
+            else:
+                s["phase"] = "round_complete"
+        return {"ok": True, "phase": s["phase"]}
 
-def next_round(game_id):
+
+def rewind_turn(game_id):
+    """Return to the player before the current turn; also undo round completion."""
     with _transaction(True) as s:
-        if not s.get("active") or s.get("game_id") != game_id or s.get("phase") not in ("round_complete", "revealed"):
+        if not s.get("active") or s.get("game_id") != game_id:
+            return {"ok": False, "error": "game_unavailable"}
+        players = s.get("players", [])
+        if not players:
+            return {"ok": False, "error": "no_players"}
+        if s.get("phase") == "round_complete":
+            s["phase"] = "round"
+            s["turn_index"] = len(players) - 1
+            return {"ok": True, "current_turn": players[-1].get("name", "")}
+        if s.get("phase") != "round":
+            return {"ok": False, "error": "turn_not_active"}
+        i = max(0, min(int(s.get("turn_index", 0) or 0), len(players) - 1))
+        if i == 0:
+            return {"ok": False, "error": "no_previous_turn"}
+        s["turn_index"] = i - 1
+        return {"ok": True, "current_turn": players[i - 1].get("name", "")}
+
+
+def repeat_round(game_id):
+    """Start another clue pass with the same roles and secret word."""
+    with _transaction(True) as s:
+        if (not s.get("active") or s.get("game_id") != game_id
+                or s.get("phase") != "round_complete"):
+            return False
+        rounds_per_game = max(1, int(s.get("rounds_per_game", 3) or 3))
+        if int(s.get("round_number", 1) or 1) >= rounds_per_game:
             return False
         s["round_number"] = int(s.get("round_number", 1) or 1) + 1
+        s["turn_index"] = 0
+        s["phase"] = "round"
+        s["votes"], s["results"] = {}, []
+        s["vote_ends_at"], s["reveal_at"] = 0, 0
+        return True
+
+
+def next_round(game_id):
+    """Start a fresh match after the reveal, dealing new roles and a new word."""
+    with _transaction(True) as s:
+        if not s.get("active") or s.get("game_id") != game_id or s.get("phase") != "revealed":
+            return False
+        s["round_number"] = 1
+        s["rounds_per_game"] = max(1, int(s.get("rounds_per_game", 3) or 3))
         _assign_roles(s)
         return s.get("phase") == "choose_word"
 
@@ -187,10 +254,7 @@ def start_vote(game_id):
     with _transaction(True) as s:
         if not s.get("active") or s.get("game_id") != game_id or s.get("phase") != "round_complete":
             return False
-        s["votes"], s["results"] = {}, []
-        for p in s.get("players", []):
-            p["vote"] = ""
-        s["vote_ends_at"], s["phase"] = time.time() + 15, "vote"
+        _begin_vote(s)
         return True
 
 def advance_deadlines(game_id, now=None):
