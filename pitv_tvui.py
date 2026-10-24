@@ -16,6 +16,9 @@ from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import pitv_framebuffer
 
+# Pillow 8/9 compatibility: Image.Resampling was added in Pillow 9.1.
+_RESAMPLING = getattr(Image, "Resampling", Image)
+
 WIDTH, HEIGHT = 1280, 720
 PNG_PATH = os.path.join(os.path.expanduser("~"), ".pitv", "tvui.png")
 BG = (5, 10, 27)
@@ -74,7 +77,7 @@ def _native_resolution(canvas):
         return canvas
     if target == canvas.size:
         return canvas
-    fitted = ImageOps.contain(canvas, target, method=Image.Resampling.LANCZOS)
+    fitted = ImageOps.contain(canvas, target, method=_RESAMPLING.LANCZOS)
     output = Image.new("RGB", target, (0, 0, 0))
     output.paste(fitted, ((target[0]-fitted.width)//2, (target[1]-fitted.height)//2))
     return output
@@ -353,7 +356,7 @@ def _cover(canvas, box, key, radius=16, image_size=(600, 280)):
     x0, y0, x1, y1 = map(int, box)
     width, height = max(1, x1-x0), max(1, y1-y0)
     art = _artwork(str(key), image_size[0], image_size[1])
-    art = ImageOps.fit(art, (width, height), method=Image.Resampling.BILINEAR)
+    art = ImageOps.fit(art, (width, height), method=_RESAMPLING.BILINEAR)
     mask = Image.new("L", (width, height), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, width-1, height-1), radius=radius, fill=255)
     canvas.paste(art, (x0, y0), mask)
@@ -433,7 +436,7 @@ def _draw_home(canvas, state):
 
     hero_box = (48, 105, 1232, 352)
     hero = ImageOps.fit(_artwork(key, 840, 360), (hero_box[2]-hero_box[0], hero_box[3]-hero_box[1]),
-                        method=Image.Resampling.BILINEAR)
+                        method=_RESAMPLING.BILINEAR)
     hero = _with_hero_shade(hero)
     mask = Image.new("L", hero.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle((0,0,hero.width-1,hero.height-1),radius=22,fill=255)
@@ -513,7 +516,7 @@ def _draw_duration(canvas, state):
     _label(d,(54,78),"SCREENSAVERS",14,MUTED,True)
     hero_box=(48,101,1232,340)
     cover=ImageOps.fit(_artwork(key,840,360),(hero_box[2]-hero_box[0],hero_box[3]-hero_box[1]),
-                       method=Image.Resampling.BILINEAR)
+                       method=_RESAMPLING.BILINEAR)
     cover=_with_hero_shade(cover,155)
     mask=Image.new("L",cover.size,0)
     ImageDraw.Draw(mask).rounded_rectangle((0,0,cover.width-1,cover.height-1),radius=22,fill=255)
