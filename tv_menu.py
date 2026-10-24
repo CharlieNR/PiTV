@@ -81,13 +81,16 @@ LOCK_STATE_FILE = "LOCK_STATE"
 
 
 def load_pins() -> dict:
-    """{name: 6-digit PIN}, read fresh each time so `screen pin` edits apply
-    without restarting the menu."""
+    """Return permanent plus unexpired temporary player PINs."""
     try:
-        data = pitv_state.load_section("PLAYER_PINS", {})
-        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+        return pitv_pins.load_all_pins()
+    except Exception as exc:
+        log(f"Could not load temporary player PINs: {type(exc).__name__}: {exc}")
+        try:
+            data = pitv_state.load_section("PLAYER_PINS", {})
+            return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
 
 def verify_pin(code: str):
