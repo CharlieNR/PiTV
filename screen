@@ -16,10 +16,12 @@ Usage: screen <command> [arg]
 
 Navigation:
   screen up | down | left | right | enter | back | clear
+  screen clear --force       force-stop the current activity and return home
 
 TV power:
   screen on
-  screen off
+  screen off                 physically switch the TV to standby
+  screen off fake            blank the PiTV screen until Back/Home is pressed
   screen status              show whether the TV is on or off
 
 TV input:
@@ -162,8 +164,19 @@ _change_input() {
 CMD="${1,,}"
 
 case "$CMD" in
-    up|down|left|right|back|clear)
+    up|down|left|right|back)
         _send "${CMD^^}"
+        ;;
+
+    clear)
+        if [[ "${2:-}" == "--force" ]]; then
+            [[ $# -eq 2 ]] || { echo "Usage: screen clear [--force]" >&2; exit 1; }
+            _send_raw "CLEAR_FORCE"
+            echo "Forced clear: returning to the PiTV home screen."
+        else
+            [[ $# -eq 1 ]] || { echo "Usage: screen clear [--force]" >&2; exit 1; }
+            _send "CLEAR"
+        fi
         ;;
 
     enter)
@@ -175,7 +188,14 @@ case "$CMD" in
         ;;
 
     off)
-        _send_raw "TV_OFF"
+        if [[ "${2:-}" == "fake" ]]; then
+            [[ $# -eq 2 ]] || { echo "Usage: screen off [fake]" >&2; exit 1; }
+            _send_raw "FAKE_OFF"
+            echo "PiTV display blanked until Back/Home is pressed."
+        else
+            [[ $# -eq 1 ]] || { echo "Usage: screen off [fake]" >&2; exit 1; }
+            _send_raw "TV_OFF"
+        fi
         ;;
 
     status)
