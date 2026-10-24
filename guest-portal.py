@@ -1686,6 +1686,19 @@ class Handler(BaseHTTPRequestHandler):
                 **pin_entry_status(self._keyboard_session_id()),
             })
             return
+        if path == "/admin/pins":
+            if not ADMIN:
+                self._json({"ok": False, "error": "not_found"}, code=404)
+                return
+            if not self._session_user():
+                self._json({"ok": False, "error": "not_signed_in"}, code=401)
+                return
+            try:
+                self._json({"ok": True, "pins": pitv_pins.all_pin_records()})
+            except Exception as exc:
+                print(f"Admin PIN list failed: {type(exc).__name__}: {exc}", flush=True)
+                self._json({"ok": False, "error": "pin_list_failed"}, code=500)
+            return
         if path != "/":
             self.send_response(404); self.end_headers(); return
 
