@@ -1404,6 +1404,8 @@ function fillAdminPin(name,pin){
      pinSendQueue=chain.then(function(){
        pinEntryCount=6;renderPinEntry();
        if(status)status.textContent='Sent '+name+'’s PIN to the TV.';
+       sync();
+       setTimeout(sync,250);
      }).catch(function(error){
        if(status)status.textContent='PIN entry failed: '+(error.message||'request failed')+'. Open the PIN menu again and retry.';
        sync();
