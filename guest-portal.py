@@ -831,7 +831,7 @@ def imposter_join_body(game_id):
  var authBox=document.getElementById('imposterAuth'),playBox=document.getElementById('imposterPlay');
  var content=document.getElementById('imposterContent'),heading=document.getElementById('imposterHeading');
  var sub=document.getElementById('imposterSubheading'),authError=document.getElementById('imposterAuthError');
- var lastRenderKey='',voteMessage='',wordSubmitting=false,polling=false,stateRevision=0;
+ var lastRenderKey='',voteMessage='',wordSubmitting=false,turnSubmitting=false,polling=false,stateRevision=0;
  function el(tag,text,cls){var n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;}
  function api(path,fields){return fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
   body:new URLSearchParams(Object.assign({game_id:gameId,token:token},fields||{}))});}
@@ -856,7 +856,7 @@ def imposter_join_body(game_id):
   authBox.hidden=true;playBox.hidden=false;
   var phase=s.phase||'ended',role=s.role||'';
   heading.textContent='Imposter · Round '+(s.round_number||1);
-  var signature=phase+'|'+role+'|'+(s.round_number||1);
+  var signature=phase+'|'+role+'|'+(s.round_number||1)+'|'+(s.current_turn||'');
   if(signature!==lastRenderKey){
    lastRenderKey=signature;content.replaceChildren();sub.textContent='';
    if(phase==='join'){
@@ -915,7 +915,37 @@ def imposter_join_body(game_id):
      content.appendChild(el('p','YOUR WORD','muted'));
      content.appendChild(el('div',s.word||'Waiting for word…','imposter-word'));
     }
-    content.appendChild(el('p','Watch the TV for whose turn it is. Give a clue without saying the exact word.','imposter-note'));
+    if(s.current_turn && s.current_turn===s.you){
+     content.appendChild(el('div',"IT'S YOUR TURN",'imposter-role pick'));
+     content.appendChild(el('p','Give a clue without saying the exact word, then tap I’m done.','imposter-note'));
+     var done=el('button','I’m done');done.type='button';done.id='imposterDone';
+     var doneStatus=el('p','','muted');doneStatus.id='imposterDoneStatus';doneStatus.setAttribute('aria-live','polite');
+     done.addEventListener('click',function(){
+      if(turnSubmitting)return;
+      turnSubmitting=true;stateRevision++;done.disabled=true;
+      doneStatus.textContent='Moving to the next player…';
+      api('/imposter/advance',{}).then(function(r){
+       return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});
+      }).then(function(x){
+       if(!x.r.ok||!x.j.ok){
+        var message={not_your_turn:'It is no longer your turn. Refreshing the game…',
+         turn_not_active:'This turn has already ended. Refreshing the game…',
+         invalid_game_session:'Your session expired. Reload this page and join again.'};
+        doneStatus.textContent=message[x.j.error]||'PiTV could not advance the turn. Refreshing the game…';
+        turnSubmitting=false;stateRevision++;poll();return;
+       }
+       doneStatus.textContent='Done. Moving on…';
+       turnSubmitting=false;stateRevision++;poll();
+      }).catch(function(error){
+       console.error('PiTV Imposter advance POST failed:',error);
+       doneStatus.textContent='Could not contact PiTV. Check your Wi-Fi and try again.';
+       turnSubmitting=false;done.disabled=false;stateRevision++;
+      });
+     });
+     content.appendChild(done);content.appendChild(doneStatus);
+    }else{
+     content.appendChild(el('p',(s.current_turn||'The next player')+' is giving a clue. Wait for your turn.','imposter-note'));
+    }
    }else if(phase==='round_complete'){
     content.appendChild(el('div','ROUND COMPLETE','imposter-role pick'));
     content.appendChild(el('p','Wait for the TV to choose another round or start the vote.','imposter-note'));
@@ -956,7 +986,7 @@ def imposter_join_body(game_id):
   }
  }
  function poll(){
-  if(!token||polling||wordSubmitting)return;
+  if(!token||polling||wordSubmitting||turnSubmitting)return;
   polling=true;
   var revision=stateRevision;
   api('/imposter/state',{}).then(function(r){
