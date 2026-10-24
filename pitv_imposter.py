@@ -212,7 +212,14 @@ def rewind_turn(game_id):
         players = s.get("players", [])
         if not players:
             return {"ok": False, "error": "no_players"}
-        if s.get("phase") == "round_complete":
+        if s.get("phase") in ("round_complete", "vote"):
+            # Back can undo the final player's advance, including the automatic
+            # transition into voting after the third clue round.
+            if s.get("phase") == "vote":
+                s["votes"], s["results"] = {}, []
+                for player in players:
+                    player["vote"] = ""
+                s["vote_ends_at"], s["reveal_at"] = 0, 0
             s["phase"] = "round"
             s["turn_index"] = len(players) - 1
             return {"ok": True, "current_turn": players[-1].get("name", "")}
