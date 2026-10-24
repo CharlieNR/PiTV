@@ -216,9 +216,9 @@ def cmd_network(args):
 def cmd_interface(args):
     """Read or persist the menu interface version (takes effect after restart)."""
     choice = args[0] if args else "status"
-    current = str(pitv_state.read_value("UI_VERSION", "1")).strip()
+    current = str(pitv_state.read_value("UI_VERSION", "2")).strip()
     if current not in ("1", "2"):
-        current = "1"
+        current = "2"
 
     if choice in ("status", "show"):
         name = "Classic" if current == "1" else "Modern TV"
