@@ -188,7 +188,10 @@ def guest_mode_on():
 
 
 def guest_pin(username):
-    return _load(PIN_FILE, {}).get(username, "—")
+    try:
+        return pitv_pins.load_all_pins().get(username, "—")
+    except Exception:
+        return _load(PIN_FILE, {}).get(username, "—")
 
 
 # ── PIN rotation (weekly, guest mode only) ───────────────────────────
