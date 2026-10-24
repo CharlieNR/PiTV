@@ -17,7 +17,7 @@ PiTV also includes admin and guest web pages. The guest page is handy when frien
 ## Features
 
 - **TV controls:** power and HDMI input switching through HDMI-CEC, when supported by your TV and HDMI setup.
-- **On-screen menu:** screensavers, optional games and AirPlay mirroring.
+- **On-screen menu:** screensavers, optional games and AirPlay mirroring. Choose the Classic interface or the modern TV-style tile interface with `screen version 1` or `screen version 2`; the setting persists and takes effect after restarting `pitv-menu.service`.
 - **Apple Home (optional):** a Homebridge TV tile for power, inputs and remote-key navigation, plus Guest Mode, Kill Switch and Joke Mode switches.
 - **Admin page:** manage accounts and TV controls from a browser.
 - **Guest page:** let friends use a phone-friendly remote when Guest Mode is enabled.
