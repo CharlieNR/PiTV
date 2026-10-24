@@ -7,9 +7,10 @@ private ~/.pitv/pitv-state.json file as {name: "6-digit PIN"}. tv_menu.py reads
 the same section to unlock locked games, logging who used which PIN.
 
   screen pin assign <name>     create (or show) a person's PIN
-  screen pin list              list everyone's PIN
-  screen pin remove <name>     delete a person's PIN
-  screen pin revoke <name>     alias for remove
+  screen pin list                         list everyone's PIN
+  screen pin remove <name>                delete a person's PIN
+  screen pin remove bulk <name>, <name>   delete several PINs at once
+  screen pin revoke <name>                alias for remove
   screen pin rename <old> <new>
 
 Also owns the emergency (master) PIN, stored as EMERGENCY_PIN in the same
@@ -126,12 +127,54 @@ def main() -> None:
 
     elif cmd in ("remove", "revoke"):
         if len(args) < 2:
-            print(f"Usage: screen pin {cmd} <name>"); sys.exit(1)
-        name = " ".join(args[1:])
-        if d.pop(name, None) is None:
-            print(f"No PIN for '{name}'."); sys.exit(1)
-        save(d)
-        print(f"Removed {name}.")
+            print(f"Usage: screen pin {cmd} <name>")
+            print("       screen pin remove bulk <name>, <name>, ...")
+            sys.exit(1)
+
+        if args[1].lower() == "bulk":
+            raw_names = " ".join(args[2:]).strip()
+            if not raw_names:
+                print("Usage: screen pin remove bulk <name>, <name>, ...")
+                sys.exit(1)
+
+            names = []
+            for entry in raw_names.split(","):
+                name = entry.strip()
+                # Parentheses are optional; accept the shorthand in the help text.
+                if len(name) >= 2 and name[0] == "(" and name[-1] == ")":
+                    name = name[1:-1].strip()
+                if not name:
+                    print("Empty name in bulk list. Separate valid names with commas.")
+                    sys.exit(1)
+                if name not in names:
+                    names.append(name)
+
+            removed = []
+            missing = []
+            for name in names:
+                if name in d:
+                    del d[name]
+                    removed.append(name)
+                else:
+                    missing.append(name)
+
+            if not removed:
+                print("No PINs removed; none of the supplied names has an assigned PIN.")
+                if missing:
+                    print("Not found: " + ", ".join(missing))
+                sys.exit(1)
+
+            save(d)
+            print(f"Removed {len(removed)} PIN(s): " + ", ".join(removed))
+            if missing:
+                print("No PIN for: " + ", ".join(missing))
+
+        else:
+            name = " ".join(args[1:])
+            if d.pop(name, None) is None:
+                print(f"No PIN for '{name}'."); sys.exit(1)
+            save(d)
+            print(f"Removed {name}.")
 
     elif cmd == "rename":
         if len(args) < 3:
