@@ -73,9 +73,10 @@ def temporary_records() -> list[dict]:
 def all_pin_records() -> list[dict]:
     """Return all player PINs for the administrator UI, without emergency PIN."""
     permanent = _permanent()
+    emergency = pitv_secrets.emergency_code()
     records = [
         {"name": name, "pin": pin, "temporary": False, "expires_at": None}
-        for name, pin in permanent.items()
+        for name, pin in permanent.items() if pin != emergency
     ]
     # Permanent entries take precedence if old data ever contains a name clash.
     seen = set(permanent)
