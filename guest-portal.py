@@ -738,6 +738,27 @@ background:#0b0f1a;border-radius:10px;min-height:54px}}
 .pin-cancel{{background:#7a2a2a}}
 @media(max-width:360px){{.pin-prompt{{align-items:stretch;flex-direction:column}}.pin-prompt button{{width:100%}}}}
 body.locked .card button{{opacity:.35;pointer-events:none;filter:grayscale(1)}}
+.app-view[hidden]{{display:none!important}}
+.tabbar{{position:fixed;z-index:70;left:0;right:0;bottom:0;padding:8px 12px calc(8px + env(safe-area-inset-bottom));background:rgba(11,15,26,.96);border-top:1px solid #29334b;backdrop-filter:blur(16px)}}
+.tabbar-inner{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:440px;margin:0 auto}}
+.tabbar button{{margin:0;padding:10px 5px;background:transparent;color:#8b93a7;font-size:14px;border-radius:12px}}
+.tabbar button.active{{background:#223553;color:#7fd1ff;font-weight:700}}
+.admin-view{{padding-bottom:94px}}
+.tab-title{{text-align:left;margin:18px 2px 6px;font-size:24px}}
+.section-label{{text-align:left;font-weight:700;margin-bottom:8px}}
+.admin-status{{min-height:22px;text-align:left;margin:8px 2px;color:#7fd1ff;font-size:14px}}
+.pin-list{{display:grid;gap:9px;margin-top:12px}}
+.pin-row{{width:100%;margin:0;display:flex;align-items:center;gap:12px;text-align:left;padding:14px;background:#151b2b;border:1px solid #29334b}}
+.pin-row-copy{{flex:1;min-width:0}}
+.pin-row-name{{display:block;font-weight:700;overflow-wrap:anywhere}}
+.pin-row-meta{{display:block;color:#8b93a7;font-size:12px;margin-top:4px}}
+.pin-row-code{{font-size:22px;letter-spacing:2px;color:#7fd1ff;font-weight:800;white-space:nowrap}}
+.pin-row-temp{{border-color:#526b8e}}
+.pin-row-remove{{width:auto;margin:0;padding:9px 10px;background:#572d39;font-size:13px}}
+.admin-action-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px}}
+.admin-action-grid button{{margin:0}}
+.pill-status{{display:inline-block;border-radius:999px;padding:4px 9px;background:#24395c;color:#d6e8ff;font-size:12px}}
+.tab-spacer{{height:12px}}
 a{{color:#7fd1ff}}
 </style></head><body><div class=wrap>{body}</div></body></html>"""
 
