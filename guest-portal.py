@@ -1261,11 +1261,178 @@ var pinPromptSeen = "", pinPromptDismissed = "";
 var pinPromptTimer = null;
 function act(a){
   if(document.body.classList.contains('locked') && !ADMIN) return;
+  var status = document.getElementById('adminStatus');
+  if(ADMIN && status && a.indexOf('guest_')===0) status.textContent='Applying guest access change…';
   fetch('/action',{method:'POST',
     headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:new URLSearchParams({action:a})}).then(function(r){
-      if(r.status===423){sync();}
+      if(r.status===423){sync();return;}
+      if(ADMIN && status && a.indexOf('guest_')===0){
+        if(!r.ok) status.textContent='Could not apply that change.';
+        else if(a==='guest_kick') status.textContent='All guest sessions have been signed out.';
+        else status.textContent='Guest access setting updated.';
+      }
+    }).catch(function(){
+      if(ADMIN && status && a.indexOf('guest_')===0) status.textContent='Could not contact PiTV.';
     });
+}
+function showTab(which){
+  if(!ADMIN)return;
+  ['remote','admin','pins'].forEach(function(name){
+    var view=document.getElementById(name+'View');
+    if(view)view.hidden=name!==which;
+    var tab=document.querySelector('[data-tab="'+name+'"]');
+    if(tab)tab.classList.toggle('active',name===which);
+  });
+  if(which==='pins')loadAdminPins();
+}
+function kickAllGuests(){
+  if(!ADMIN)return;
+  if(!window.confirm('Sign out every guest session now? They will need to sign in again.'))return;
+  act('guest_kick');
+}
+function remainingTime(expiresAt){
+  var seconds=Math.max(0,Math.floor(Number(expiresAt||0)-Date.now()/1000));
+  var hours=Math.floor(seconds/3600),minutes=Math.floor((seconds%3600)/60);
+  if(hours>0)return hours+'h '+minutes+'m remaining';
+  return minutes+'m remaining';
+}
+function renderAdminPins(pins){
+  var list=document.getElementById('pinList');
+  var status=document.getElementById('pinListStatus');
+  if(!list||!status)return;
+  list.replaceChildren();
+  if(!pins.length){
+    status.textContent='No player PINs are assigned yet.';
+    return;
+  }
+  status.textContent=pins.length+' player PIN'+(pins.length===1?'':'s')+'. Tap a row to send its PIN to the active TV keypad.';
+  pins.forEach(function(pin){
+    var item=document.createElement('div');item.className='pin-item';
+    var select=document.createElement('button');
+    select.type='button';select.className='pin-row'+(pin.temporary?' pin-row-temp':'');
+    var copy=document.createElement('span');copy.className='pin-row-copy';
+    var player=document.createElement('span');player.className='pin-row-name';player.textContent=pin.name;
+    var meta=document.createElement('span');meta.className='pin-row-meta';
+    meta.textContent=pin.temporary?'Temporary · '+remainingTime(pin.expires_at):'Permanent PIN';
+    var code=document.createElement('span');code.className='pin-row-code';code.textContent=pin.pin;
+    copy.appendChild(player);copy.appendChild(meta);select.appendChild(copy);select.appendChild(code);
+    select.addEventListener('click',function(){fillAdminPin(pin.name,pin.pin);});
+    item.appendChild(select);
+    if(pin.temporary){
+      var remove=document.createElement('button');remove.type='button';remove.className='pin-row-remove';
+      remove.textContent='Remove';
+      remove.addEventListener('click',function(){removeTemporaryPin(pin.name);});
+      item.appendChild(remove);
+    }
+    list.appendChild(item);
+  });
+}
+function loadAdminPins(){
+  if(!ADMIN)return;
+  var status=document.getElementById('pinListStatus');
+  if(status)status.textContent='Loading PINs…';
+  fetch('/admin/pins',{headers:{'Accept':'application/json'}})
+   .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+   .then(function(x){
+     if(!x.r.ok||!x.j.ok)throw new Error(x.j.error||'HTTP '+x.r.status);
+     renderAdminPins(Array.isArray(x.j.pins)?x.j.pins:[]);
+   }).catch(function(error){
+     if(status)status.textContent='Could not load PINs: '+(error.message||'request failed')+'.';
+   });
+}
+function removeTemporaryPin(name){
+  if(!ADMIN)return;
+  var status=document.getElementById('pinListStatus');
+  if(!window.confirm('Remove the temporary PIN for '+name+' now?'))return;
+  fetch('/admin/temp-pin/remove',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({name:name})})
+   .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+   .then(function(x){
+     if(!x.r.ok||!x.j.ok)throw new Error(x.j.error||'remove failed');
+     if(status)status.textContent='Removed temporary PIN for '+name+'.';
+     loadAdminPins();
+   }).catch(function(error){
+     if(status)status.textContent='Could not remove temporary PIN: '+(error.message||'request failed')+'.';
+   });
+}
+function fillAdminPin(name,pin){
+  if(!ADMIN)return;
+  var status=document.getElementById('pinListStatus');
+  if(!state||!state.pin_entry_active||!state.pin_prompt_id){
+    if(status)status.textContent='Open a player PIN keypad on the TV first, then tap '+name+' again.';
+    return;
+  }
+  if(!/^\\d{6}$/.test(String(pin))){
+    if(status)status.textContent='This PIN is not six digits, so it was not sent.';
+    return;
+  }
+  var promptId=state.pin_prompt_id;
+  if(status)status.textContent='Claiming the active TV keypad…';
+  fetch('/pin/claim',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({event_id:promptId})})
+   .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+   .then(function(result){
+     if(!result.r.ok){
+       if(status)status.textContent=result.r.status===409
+         ? 'The keypad is in use by another browser, or the prompt has ended.'
+         : 'Could not claim the TV keypad. Try again.';
+       sync();return;
+     }
+     var token=result.j.token||'',eventId=result.j.event_id||promptId;
+     var count=Math.max(0,Math.min(6,Number(result.j.count)||0));
+     pinToken=token;pinEventId=eventId;pinEntryCount=count;
+     pinPromptDismissed=eventId;
+     var prompt=document.getElementById('pinPrompt');if(prompt)prompt.hidden=true;
+     if(status)status.textContent='Entering '+name+'’s PIN on the TV…';
+     var send=function(key){
+       return fetch('/pin/input',{method:'POST',
+         headers:{'Content-Type':'application/x-www-form-urlencoded'},
+         body:new URLSearchParams({token:token,event_id:eventId,key:key})})
+        .then(function(r){if(!r.ok)throw new Error('TV keypad prompt ended or access was lost.');});
+     };
+     var chain=pinSendQueue.catch(function(){});
+     for(var i=0;i<count;i++)chain=chain.then(function(){return send('DEL');});
+     for(var j=0;j<String(pin).length;j++){
+       (function(digit){chain=chain.then(function(){return send(digit);});})(String(pin)[j]);
+     }
+     pinSendQueue=chain.then(function(){
+       pinEntryCount=6;renderPinEntry();
+       if(status)status.textContent='Sent '+name+'’s PIN to the TV.';
+     }).catch(function(error){
+       if(status)status.textContent='PIN entry failed: '+(error.message||'request failed')+'. Open the PIN menu again and retry.';
+       sync();
+     });
+   }).catch(function(){
+     if(status)status.textContent='Could not contact PiTV to fill that PIN.';
+   });
+}
+function setupAdminForms(){
+  if(!ADMIN)return;
+  var form=document.getElementById('tempPinForm');
+  if(form)form.addEventListener('submit',function(e){
+    e.preventDefault();
+    var nameField=document.getElementById('tempPinName');
+    var button=document.getElementById('tempPinCreate');
+    var status=document.getElementById('tempPinStatus');
+    var name=nameField.value.trim();
+    if(!name){status.textContent='Enter a name first.';return;}
+    button.disabled=true;status.textContent='Generating a temporary PIN…';
+    fetch('/admin/temp-pin',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({name:name})})
+     .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+     .then(function(x){
+       if(!x.r.ok||!x.j.ok)throw new Error(x.j.message||x.j.error||'Could not create the PIN.');
+       var p=x.j.pin;
+       status.textContent='Created '+p.name+' · PIN '+p.pin+' · expires in 24 hours.';
+       nameField.value='';loadAdminPins();
+     }).catch(function(error){
+       status.textContent=error.message||'Could not create the temporary PIN.';
+     }).then(function(){button.disabled=false;});
+  });
 }
 function pinLabel(s){
   var title = s.pin_prompt_title || 'PiTV';
@@ -1574,6 +1741,8 @@ function sync(){
     return r.json();
   }).then(function(s){ if(s) apply(s); }).catch(function(){});
 }
+setupAdminForms();
+if(ADMIN){showTab('remote');loadAdminPins();}
 sync(); setInterval(sync, POLL*1000);
 document.addEventListener('visibilitychange', function(){
   if(!document.hidden) sync();              // straight back on re-open
