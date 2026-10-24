@@ -43,11 +43,12 @@ Controller:
   screen controller        scan for Bluetooth controller (60 seconds)
 
 Player PINs (unlock locked games; the log records who played):
-  screen pin assign <name>              create/show a person's PIN
-  screen pin assign <name> custom <pin> set a specific 6-digit PIN
-  screen pin list                       list everyone's PIN
-  screen pin remove <name>              delete a person's PIN
-  screen pin rename <old> <new>         rename a person
+  screen pin assign <name>                  create/show a person's PIN
+  screen pin assign <name> custom <pin>     set a specific 6-digit PIN
+  screen pin list                           list everyone's PIN
+  screen pin remove <name>                  delete a person's PIN
+  screen pin remove bulk <name>, <name>, …  delete several PINs at once
+  screen pin rename <old> <new>             rename a person
 
 Updates:
   screen update                         update from the experimental branch
