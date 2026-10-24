@@ -1530,7 +1530,7 @@ def run_imposter(stdscr,players: list[str]) -> None:
                         [("NOW IT IS",curses.color_pair(3)),
                          (who.upper()+"'S GO",curses.color_pair(2)|curses.A_BOLD),
                          "Give a clue without saying the exact word.",
-                         "Select: next player    Back: previous player"])
+                         "Select: next player"])
                 elif phase=="round_complete":
                     round_number = int(state.get("round_number", 1) or 1)
                     rounds_per_game = int(state.get("rounds_per_game", 3) or 3)
@@ -1541,7 +1541,7 @@ def run_imposter(stdscr,players: list[str]) -> None:
                           curses.color_pair(2)|curses.A_BOLD|(curses.A_REVERSE if choice==0 else 0)),
                          ("VOTE NOW",
                           curses.color_pair(5)|curses.A_BOLD|(curses.A_REVERSE if choice==1 else 0)),
-                         "Up/Down: choose    Select: confirm    Back: previous player"])
+                         "Up/Down: choose    Select: confirm"])
                 elif phase=="vote":
                     rem=max(0,int(float(state.get("vote_ends_at",now))-now+0.999))
                     _imposter_draw_lines(stdscr,"VOTE NOW",["Choose who you think the imposter is on your phone.",f"{rem} seconds remaining.","Votes can be changed until time runs out."])
