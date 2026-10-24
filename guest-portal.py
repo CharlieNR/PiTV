@@ -855,7 +855,7 @@ def imposter_join_body(game_id):
  function render(s){
   authBox.hidden=true;playBox.hidden=false;
   var phase=s.phase||'ended',role=s.role||'';
-  heading.textContent='Imposter · Round '+(s.round_number||1);
+  heading.textContent='Imposter · Round '+(s.round_number||1)+'/'+(s.rounds_per_game||3);
   var signature=phase+'|'+role+'|'+(s.round_number||1)+'|'+(s.current_turn||'');
   if(signature!==lastRenderKey){
    lastRenderKey=signature;content.replaceChildren();sub.textContent='';
