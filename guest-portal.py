@@ -881,21 +881,23 @@ def imposter_join_body(game_id):
       if(!word){wordStatus.textContent='Enter a word first.';inp.focus();return;}
       wordSubmitting=true;stateRevision++;btn.disabled=true;
       wordStatus.textContent='Sending word to PiTV…';
-      api('/imposter/word',{word:word})
+      api('/action',{action:'imposter_word',word:word})
        .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
        .then(function(x){
         if(!x.r.ok||!x.j.ok){
          var messages={invalid_word:'Enter a word of 1–40 characters.',
           not_word_chooser:'Only the selected word chooser can submit the word.',
-          invalid_game_session:'Your session expired. Reload this page and join again.'};
+          invalid_game_session:'Your session expired. Reload this page and join again.',
+          server_error:'PiTV received the word but encountered a server error. Check the PiTV guest service log.'};
          wordStatus.textContent=messages[x.j.error]||('PiTV could not accept the word (HTTP '+x.r.status+'). Try again.');
          wordSubmitting=false;btn.disabled=false;inp.focus();return;
         }
         wordStatus.textContent='Word accepted. Moving to the round…';
         wordSubmitting=false;stateRevision++;poll();
        })
-       .catch(function(){
-        wordStatus.textContent='Could not contact PiTV. Check the Wi-Fi connection and try again.';
+       .catch(function(error){
+        console.error('PiTV Imposter word POST failed:',error);
+        wordStatus.textContent='The word request failed before PiTV returned a response: '+(error&&error.message?error.message:'network error')+'. Check the PiTV guest service log.';
         wordSubmitting=false;btn.disabled=false;
        });
      });
@@ -987,8 +989,9 @@ def _imposter_players_for_pin(pin):
     return matches
 
 
-def _imposter_api_post(self, path):
-    body = self._body()
+def _imposter_api_post(self, path, body=None):
+    if body is None:
+        body = self._body()
     if body is None:
         self._json({"ok": False, "error": "bad_request"}, code=413)
         return
@@ -1023,7 +1026,22 @@ def _imposter_api_post(self, path):
         if not word or len(word) > 40:
             self._json({"ok": False, "error": "invalid_word"}, code=400)
         else:
-            result = pitv_imposter.choose_word(game_id, token, word)
+            try:
+                result = pitv_imposter.choose_word(game_id, token, word)
+            except Exception as exc:
+                # Always return JSON instead of dropping the HTTP connection;
+                # the phone can then show a server error rather than a network failure.
+                print(
+                    f"Imposter word submission failed: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                self._json({"ok": False, "error": "server_error"}, code=500)
+                return
+            if not result.get("ok"):
+                print(
+                    f"Imposter word submission refused: {result.get('error', 'unknown')}",
+                    flush=True,
+                )
             self._json(result, code=200 if result.get("ok") else 409)
     elif path == "/imposter/vote":
         result = pitv_imposter.set_vote(game_id, token, body.get("target", ""))
@@ -1669,6 +1687,19 @@ class Handler(BaseHTTPRequestHandler):
                 code=403,
             )
             return
+        # Parse /action exactly once. Imposter's QR join page uses the same
+        # form-encoded POST mechanism as guest controls, but authenticates with
+        # its game-scoped bearer token rather than a guest-login cookie.
+        action_body = None
+        if path == "/action":
+            action_body = self._body()
+            if action_body is None:
+                self._json({"ok": False, "error": "bad_request"}, code=413)
+                return
+            if action_body.get("action", "") == "imposter_word":
+                _imposter_api_post(self, "/imposter/word", action_body)
+                return
+
         # Let PIN endpoints return authenticated JSON errors if Guest Mode
         # has just been switched off, rather than a misleading HTML 200.
         if (not ADMIN and not guest_mode_on()
@@ -1970,9 +2001,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 423 Locked — the page greys itself out, but the server is
                 # what actually refuses, so a stale tab can't get through.
                 self.send_response(423); self.end_headers(); return
-            b = self._body()
-            if b is None:
-                self.send_response(413); self.end_headers(); return
+            b = action_body
             action = b.get("action", "")
             # A claimed phone PIN keypad has exclusive input priority over web
             # D-pad commands, including commands from the owner page.
