@@ -64,6 +64,22 @@ def _background():
     return Image.alpha_composite(image.convert("RGBA"), glow).convert("RGB")
 
 
+def _native_resolution(canvas):
+    """Scale with a proper image filter before the framebuffer's nearest resize."""
+    try:
+        with open("/dev/fb0", "r+b", buffering=0) as fb:
+            info = pitv_framebuffer._framebuffer_info(fb.fileno())
+        target = (int(info["width"]), int(info["height"]))
+    except (OSError, AttributeError, RuntimeError, ValueError, KeyError):
+        return canvas
+    if target == canvas.size:
+        return canvas
+    fitted = ImageOps.contain(canvas, target, method=Image.Resampling.LANCZOS)
+    output = Image.new("RGB", target, (0, 0, 0))
+    output.paste(fitted, ((target[0]-fitted.width)//2, (target[1]-fitted.height)//2))
+    return output
+
+
 def _starfield(draw, w, h, seed, count=50):
     rng = random.Random(seed)
     for _ in range(count):
@@ -414,7 +430,6 @@ def _draw_home(canvas, state):
     items = state["home_items"]
     selected = max(0, min(int(state.get("selected_art", 0)), len(items)-1))
     label, key, description = items[selected]
-    _label(d, (54, 78), "PITV  /  YOUR SPACE", 14, MUTED, True)
 
     hero_box = (48, 105, 1232, 352)
     hero = ImageOps.fit(_artwork(key, 840, 360), (hero_box[2]-hero_box[0], hero_box[3]-hero_box[1]),
@@ -425,12 +440,10 @@ def _draw_home(canvas, state):
     canvas.paste(hero, hero_box[:2], mask)
     d = ImageDraw.Draw(canvas)
     _label(d, (78, 226), label, 38, WHITE, True)
-    _label(d, (80, 273), description, 18, (221, 231, 247))
     _pill(d, (80, 304, 225, 335), "SELECT TO OPEN", (29, 98, 166), WHITE, 12)
     # A slight blue outline makes it clear this is the featured, focused item.
     d.rounded_rectangle(hero_box, radius=22, outline=(62, 164, 255), width=2)
 
-    _label(d, (55, 380), "EXPLORE", 16, MUTED, True)
     tile_w, tile_h, tile_gap = 216, 128, 18
     total = len(items)*tile_w+(len(items)-1)*tile_gap
     x0 = (WIDTH-total)//2
@@ -445,7 +458,6 @@ def _draw_home(canvas, state):
         _label(d, (x+tile_w//2, y+tile_h+13), title, 16,
                WHITE if selected_tile else (191,207,231), selected_tile, anchor="mm")
     d = ImageDraw.Draw(canvas)
-    _label(d, (56, 636), "Use the arrows to browse", 14, MUTED)
     _label(d, (1224, 636), "SELECT  OPEN     BACK  HOME", 14, MUTED, True, anchor="ra")
 
 
@@ -508,7 +520,6 @@ def _draw_duration(canvas, state):
     canvas.paste(cover,hero_box[:2],mask)
     d=ImageDraw.Draw(canvas)
     _label(d,(79,222),label,34,WHITE,True)
-    _label(d,(81,265),"Choose how long it stays on screen",17,(221,231,247))
     d.rounded_rectangle(hero_box,radius=22,outline=(49,124,211),width=2)
     options=state.get("durations",[])
     selected=max(0,min(int(state.get("selected_duration",0)),len(options)-1))
@@ -683,6 +694,7 @@ def render(state):
         return False
 
     canvas = _draw_overlay(canvas, state.get("overlay")) or canvas
+    canvas = _native_resolution(canvas)
     # Keep the temporary image in PiTV's private state directory rather than
     # using a predictable /tmp path that another local account could symlink.
     os.makedirs(os.path.dirname(PNG_PATH), mode=0o700, exist_ok=True)
