@@ -1104,6 +1104,42 @@ def _imposter_local_ip() -> str:
 
 
 IMPOSTER_JOIN_IMAGE = "/tmp/pitv-imposter-join.png"
+IMPOSTER_FBI_LOG = "/tmp/pitv-imposter-fbi.log"
+
+
+def _imposter_fd_info(fd):
+    """Describe whether a file descriptor is attached to a Linux TTY."""
+    try:
+        if not os.isatty(fd):
+            return "not-a-tty"
+        return os.ttyname(fd)
+    except OSError as e:
+        return f"unavailable ({e})"
+
+
+def _imposter_report_fbi_exit(proc, context):
+    """Record an unexpected fbi exit and copy its stderr tail into the PiTV log."""
+    if proc is None:
+        return
+    returncode = proc.poll()
+    if returncode is None or getattr(proc, "_pitv_failure_reported", False):
+        return
+    proc._pitv_failure_reported = True
+    if returncode < 0:
+        result = f"signal {-returncode}"
+    else:
+        result = f"exit code {returncode}"
+    log(f"Imposter framebuffer viewer exited {context} ({result}); stderr log: {IMPOSTER_FBI_LOG}")
+    try:
+        with open(IMPOSTER_FBI_LOG, "r", encoding="utf-8", errors="replace") as f:
+            tail = f.read().splitlines()[-12:]
+    except OSError as e:
+        log(f"Could not read Imposter framebuffer viewer diagnostics: {e}")
+        return
+    if not tail:
+        log("Imposter framebuffer viewer produced no stderr diagnostics.")
+    for line in tail:
+        log(f"fbi stderr: {line}")
 
 
 def _imposter_render_join_image(url, joined, total):
@@ -1179,43 +1215,79 @@ def _imposter_render_join_image(url, joined, total):
 def _imposter_start_join_image(stdscr, image_path):
     """Switch from curses to a real framebuffer image viewer for the join QR."""
     if not os.path.exists("/dev/fb0"):
-        log("Imposter QR image cannot be displayed: /dev/fb0 is missing")
+        log("Imposter QR viewer unavailable: /dev/fb0 does not exist.")
         return None
-    if not shutil.which("fbi"):
-        log("Imposter QR image cannot be displayed: fbi is not installed")
+    if not os.access("/dev/fb0", os.R_OK | os.W_OK):
+        try:
+            st = os.stat("/dev/fb0")
+            log(
+                "Imposter QR viewer cannot access /dev/fb0: "
+                f"mode={oct(st.st_mode & 0o777)}, uid={st.st_uid}, gid={st.st_gid}; "
+                f"running uid={os.geteuid()}, groups={os.getgroups()}"
+            )
+        except OSError as e:
+            log(f"Imposter QR viewer cannot inspect /dev/fb0: {e}")
         return None
+    fbi_path = shutil.which("fbi")
+    if not fbi_path:
+        log("Imposter QR viewer unavailable: fbi is not installed or is not on PATH.")
+        return None
+    if not os.path.isfile(image_path) or not os.access(image_path, os.R_OK):
+        log(f"Imposter QR viewer cannot read the generated PNG: {image_path}")
+        return None
+
+    # fbi uses ioctl() on STDIN_FILENO for Linux virtual-terminal operations.
+    # Do not redirect stdin/stdout to /dev/null: this systemd service deliberately
+    # attaches them to tty1, and fbi needs that TTY even with --nointeractive.
+    command = [
+        fbi_path, "-T", "1", "-d", "/dev/fb0",
+        "--noverbose", "--nointeractive", "--autozoom",
+        "-t", "3600", image_path,
+    ]
+    log(
+        "Starting Imposter PNG viewer: "
+        f"image={image_path}, fbi={fbi_path}, "
+        f"stdin={_imposter_fd_info(0)}, stdout={_imposter_fd_info(1)}, "
+        f"fb0_access={os.access('/dev/fb0', os.R_OK | os.W_OK)}; "
+        f"stderr={IMPOSTER_FBI_LOG}"
+    )
 
     try:
         curses.def_prog_mode()
         curses.endwin()
         _reset_terminal()
-        with open(LOG_PATH, "a") as viewer_log:
+        with open(IMPOSTER_FBI_LOG, "w", encoding="utf-8") as viewer_log:
+            viewer_log.write("PiTV Imposter framebuffer viewer diagnostics.\n")
+            viewer_log.write("Command: " + " ".join(command) + "\n")
+            viewer_log.flush()
+            # Inherit systemd's tty1 stdin/stdout. Redirect only stderr so fbi's
+            # own diagnostics are kept separately from the timestamped PiTV log.
             proc = subprocess.Popen(
-                [
-                    "fbi", "--vt", "1", "--device", "/dev/fb0",
-                    "--noverbose", "--nointeractive", "--autozoom",
-                    "--timeout", "3600", image_path,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                command,
                 stderr=viewer_log,
                 close_fds=True,
             )
-        # Let fbi initialise and report permission/device errors before treating
-        # the image as visible.
-        time.sleep(0.35)
+        # Allow enough time for fbi to initialise its graphics/VT state. This
+        # detects startup failures while the PiTV loop reports later exits too.
+        time.sleep(0.8)
         if proc.poll() is not None:
-            log(f"Imposter framebuffer image viewer exited during startup (code {proc.returncode}); see {LOG_PATH}")
+            _imposter_report_fbi_exit(proc, "during startup")
             try:
                 curses.reset_prog_mode()
                 curses.curs_set(0)
             except curses.error:
                 pass
             return None
-        log("Imposter QR displayed as a PNG through the framebuffer")
+        log("Imposter framebuffer viewer is still running after startup check.")
         return proc
     except Exception as e:
-        log(f"Could not launch Imposter framebuffer image viewer: {e}")
+        log(f"Could not launch Imposter framebuffer image viewer: {type(e).__name__}: {e}")
+        try:
+            with open(IMPOSTER_FBI_LOG, "r", encoding="utf-8", errors="replace") as f:
+                for line in f.read().splitlines()[-12:]:
+                    log(f"fbi stderr: {line}")
+        except OSError:
+            pass
         try:
             curses.reset_prog_mode()
             curses.curs_set(0)
@@ -1337,17 +1409,33 @@ def run_imposter(stdscr,players: list[str]) -> None:
                     pitv_imposter.next_round(game_id);choice=0
             pitv_imposter.advance_deadlines(game_id)
             state=pitv_imposter.read_state();phase=str(state.get("phase","join"));now=time.time()
+            joined_count=sum(1 for p in state.get("players",[]) if p.get("joined"))
+            # fbi can exit after appearing to start successfully. Report its stderr
+            # and stop retrying on every frame; a changed player count permits a
+            # fresh attempt, while the diagnostic screen and join URL remain visible.
+            if join_viewer is not None and join_viewer.poll() is not None:
+                _imposter_report_fbi_exit(join_viewer, "after startup")
+                if phase == "join":
+                    join_viewer=None
+                    join_image_joined=None
+                    join_attempted_count=joined_count
+                    _imposter_draw_lines(stdscr,"JOIN QR DISPLAY ERROR",[
+                        "The QR PNG was created, but fbi exited unexpectedly.",
+                        "See /tmp/pitv.log and /tmp/pitv-imposter-fbi.log.",
+                        url,
+                        "No character-based QR substitute is being shown.",
+                    ])
+                    drawn=None
             if phase!="join" and join_viewer is not None:
                 _imposter_stop_join_image(stdscr,join_viewer)
                 join_viewer=None
                 join_image_joined=None
                 join_attempted_count=None
                 drawn=None
-            joined_count=sum(1 for p in state.get("players",[]) if p.get("joined"))
             join_needs_refresh=(phase=="join" and (
                 (join_viewer is None and join_attempted_count!=joined_count)
                 or (join_viewer is not None and
-                    (joined_count!=join_image_joined or join_viewer.poll() is not None))
+                    joined_count!=join_image_joined)
             ))
             due=now-last_draw >= (0.30 if phase in ("vote","results") else 0.45)
             sig=(phase,state.get("joined_count"),state.get("round_number"),state.get("turn_index"),choice,
@@ -1367,8 +1455,8 @@ def run_imposter(stdscr,players: list[str]) -> None:
                                 join_image_joined=joined_count
                             else:
                                 _imposter_draw_lines(stdscr,"JOIN QR DISPLAY ERROR",[
-                                    "A QR PNG was generated, but the framebuffer viewer could not display it.",
-                                    "Check /tmp/pitv.log and confirm the Pi has /dev/fb0 and video-group access.",
+                                    "The QR PNG exists, but the framebuffer viewer did not stay running.",
+                                    "Read /tmp/pitv.log and /tmp/pitv-imposter-fbi.log for the cause.",
                                     url,
                                     "No character-based QR substitute is being shown.",
                                 ])
