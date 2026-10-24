@@ -143,6 +143,7 @@ def set_highscore_name(binary: str, who: str) -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 current_view        = "MENU"
+fake_off_active     = False       # simulated TV-off: blank screen until Back
 selected_art_idx    = 0
 selected_game_idx   = 0
 selected_dur_idx    = 0
@@ -513,6 +514,7 @@ def listen_controllers() -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 def listen_fifo():
+    global fake_off_active
     if os.path.exists(FIFO_PATH):
         try: os.remove(FIFO_PATH)
         except Exception: pass
@@ -532,6 +534,28 @@ def listen_fifo():
                 for line in fifo:
                     raw = line.strip()
                     cmd = raw.upper()
+
+                    if cmd == "CLEAR_FORCE":
+                        # Stop the current activity and force the home menu.
+                        # Clear input leases so they cannot swallow the exit.
+                        fake_off_active = False
+                        _clear_web_pin_lease()
+                        _clear_web_keyboard_lease()
+                        input_queue.clear()
+                        input_queue.append("HOME")
+                        log("Forced clear: returning to home menu")
+                        continue
+
+                    if cmd == "FAKE_OFF":
+                        # Stop active games/screensavers, then keep the frame
+                        # buffer blank until the user presses Back/Home.
+                        fake_off_active = True
+                        _clear_web_pin_lease()
+                        _clear_web_keyboard_lease()
+                        input_queue.clear()
+                        input_queue.append("HOME")
+                        log("Fake screen off: blank until Back")
+                        continue
 
                     if cmd == "LOG_CLEAR":
                         log_clear()
@@ -1582,11 +1606,26 @@ def route_remote_key(tok: str) -> None:
     HOME is always the way back to PiTV — if Sky was driving, it also flips the
     TV to the Pi's input, so you're never left pressing keys at a menu you
     can't see."""
+    global fake_off_active
     tok = tok.upper()
+    if fake_off_active:
+        # Back/Home wakes the simulated screen. All other keys are ignored
+        # while the display is intentionally blank. Also stop any game still
+        # unwinding from the command that blanked the screen.
+        if tok in ("BACK", "HOME"):
+            fake_off_active = False
+            input_queue.clear()
+            input_queue.append("HOME")
+        return
     if tok == "HOME":
         if _sky_routes_keys():
             _run_cec_cmd("tx 1f:82:20:00")     # back to PiTV (HDMI 2)
         input_queue.append("HOME")
+        return
+    if tok == "BACK" and controller_mode == "GAME_EXTERNAL":
+        # Back is an exit command in PiTV's external-game runner, not an
+        # in-game key. Keep it working even while browser text input is leased.
+        input_queue.append("BACK")
         return
     if controller_mode == "GAME_EXTERNAL" and _web_keyboard_claim_active():
         # There is no way to identify which human pressed the HomeKit RemoteKey.
@@ -3521,7 +3560,7 @@ def main(stdscr):
     global ttt_sel, ttt_mode, ttt_stage, ttt_p1
     global otp_fail_count, system_locked, log_visible
     global lock_fail_count, hard_locked
-    global controller_mode
+    global controller_mode, fake_off_active
 
     curses.curs_set(0)
     stdscr.nodelay(True)
@@ -3547,6 +3586,9 @@ def main(stdscr):
     last_key_time = 0.0
 
     while True:
+        if fake_off_active and not hard_locked and not system_locked:
+            current_view = "FAKE_OFF"
+
         # ── View transition ──────────────────────────────────────────
         if current_view != last_view:
             stdscr.clear()
@@ -3644,6 +3686,12 @@ def main(stdscr):
                                 current_view = "HARDLOCK"
                 # All other commands (HOME, CLEAR, etc.) are ignored while locked
                 continue
+
+            if fake_off_active and cmd == "BACK":
+                fake_off_active = False
+                current_view = "MENU"
+                input_queue.clear()
+                break
 
             # A valid phone PIN press passes through unchanged to the keypad handler,
             # which updates the entered buffer without moving the TV highlight.
@@ -3835,6 +3883,11 @@ def main(stdscr):
                 if cmd in ("BACK","SELECT","LEFT"):
                     current_view = "MENU"
 
+        # A fake-off request may arrive while a blocking game is running.
+        # Reassert it after the runner returns and before rendering.
+        if fake_off_active and not hard_locked and not system_locked:
+            current_view = "FAKE_OFF"
+
         # Auto-return from timed art
         if current_view == "ART_RUNNING" and art_stop_time:
             if time.time() >= art_stop_time:
@@ -3844,7 +3897,7 @@ def main(stdscr):
         _publish_pin_entry_state()
 
         # ── Render ──────────────────────────────────────────────────
-        if current_view in ("MENU","DURATION_SELECT","GAMES_MENU","CLEAR",
+        if current_view in ("MENU","DURATION_SELECT","GAMES_MENU","CLEAR","FAKE_OFF",
                              "LOCKED","TTT_MODE","IMPOSTER_COUNT"):
             stdscr.erase()
 
@@ -3905,14 +3958,17 @@ def main(stdscr):
         elif current_view == "CLEAR":
             pass
 
-        # Codes are only displayed when explicitly requested. A player PIN
-        # temporarily takes priority over the guest connection password.
-        if player_pin_showing():
-            draw_player_pin_overlay(stdscr)
-        elif pair_showing():
-            draw_pair_overlay(stdscr)
-        else:
-            pair_restore_input()
+        # Fake-off must stay completely blank, including temporary PIN and
+        # guest connection overlays.
+        if current_view != "FAKE_OFF":
+            # Codes are only displayed when explicitly requested. A player PIN
+            # temporarily takes priority over the guest connection password.
+            if player_pin_showing():
+                draw_player_pin_overlay(stdscr)
+            elif pair_showing():
+                draw_pair_overlay(stdscr)
+            else:
+                pair_restore_input()
 
         stdscr.refresh()
         frame += 1
