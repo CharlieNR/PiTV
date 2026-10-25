@@ -1512,27 +1512,26 @@ def _imposter_draw_lines(stdscr,title,lines):
 _IMPOSTER_DRAW_SCREEN = None
 
 def _imposter_render_screen(state, fallback_title="IMPOSTER", fallback_lines=None):
-    """Prefer a full-screen V2 image for every Imposter phase."""
-    global _GRAPHIC_UI_FAILED
-    if (UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None
-            and not _GRAPHIC_UI_FAILED):
+    """Render Imposter with V2 only when UI_VERSION is 2; never fall back to curses."""
+    if UI_VERSION == "2":
+        if not _ensure_v2_renderer():
+            _wait_for_v2_renderer()
+            return True
         try:
             pitv_tvui.render(state, log_fn=log)
-            return True
+            _mark_v2_render_success()
         except Exception as exc:
-            log(f"Imposter V2 renderer failed: {exc!r}")
-            for trace_line in traceback.format_exception(type(exc), exc, exc.__traceback__):
-                for trace_part in trace_line.rstrip().splitlines():
-                    log(f"Imposter V2 traceback: {trace_part}")
-            try:
-                pitv_framebuffer.clear_framebuffer()
-            except Exception:
-                pass
-            _GRAPHIC_UI_FAILED = True
+            _handle_v2_render_error(exc)
+        # The phase/input state machine continues, but the display stays blank
+        # until the real image renderer succeeds; no text is drawn over it.
+        return True
     if _IMPOSTER_DRAW_SCREEN is not None:
-        _imposter_draw_lines(_IMPOSTER_DRAW_SCREEN, fallback_title,
-                             fallback_lines or ["Imposter screen unavailable."])
+        _imposter_draw_lines(
+            _IMPOSTER_DRAW_SCREEN, fallback_title,
+            fallback_lines or ["Imposter screen unavailable."]
+        )
     return False
+
 
 def _imposter_draw_results(stdscr,results,progress):
     h,w=stdscr.getmaxyx()
@@ -3180,6 +3179,23 @@ def run_mirror(stdscr):
     def _draw(stdscr, connected, device, title, artist):
         nonlocal graphic_music_active, fallback_cleared
 
+        if UI_VERSION == "2":
+            if not _ensure_v2_renderer():
+                _wait_for_v2_renderer()
+                return
+            try:
+                pitv_tvui.render({
+                    "view": "MUSIC",
+                    "music_connected": bool(connected),
+                    "music_device": str(device or ""),
+                    "music_title": str(title or ""),
+                    "music_artist": str(artist or ""),
+                }, log_fn=log)
+                _mark_v2_render_success()
+            except Exception as exc:
+                _handle_v2_render_error(exc)
+            return
+
         if graphic_music_active:
             try:
                 pitv_tvui.render({
@@ -3192,19 +3208,9 @@ def run_mirror(stdscr):
                 return
             except Exception as exc:
                 graphic_music_active = False
-                log(f"V2 Stream Music renderer failed; using a clean fallback screen: {exc!r}")
-                for trace_line in traceback.format_exception(
-                    type(exc), exc, exc.__traceback__
-                ):
-                    for trace_part in trace_line.rstrip().splitlines():
-                        log(f"Music traceback: {trace_part}")
-                try:
-                    pitv_framebuffer.clear_framebuffer()
-                except Exception:
-                    pass
-                fallback_cleared = True
+                log(f"Version 1 Stream Music renderer failed: {exc!r}")
 
-        # Any terminal fallback must start from a cleared framebuffer so its
+        # This text-only presentation is retained for classic Version 1 only.
         # text can never sit on top of the previous graphical home screen.
         if UI_VERSION == "2" and not fallback_cleared:
             try:
