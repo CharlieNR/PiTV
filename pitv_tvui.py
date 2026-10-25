@@ -694,6 +694,7 @@ _CAROUSEL_WAKE = threading.Event()
 _CAROUSEL_STOP = threading.Event()
 _CAROUSEL_THREAD = None
 _CAROUSEL_LOGGER = None
+_CAROUSEL_ANIMATION_STEPS = 6
 _CAROUSEL = {
     "view": None,
     "items": [],
@@ -812,8 +813,27 @@ def _sync_carousel_runtime(state):
             _CAROUSEL_THREAD.start()
 
 
+def _adapt_carousel_after_slow_transition(elapsed):
+    """Trade transition detail for responsiveness if the Pi exceeds 0.5 seconds."""
+    global _CAROUSEL_ANIMATION_STEPS
+    if float(elapsed) <= 0.5:
+        return ""
+    with _CAROUSEL_LOCK:
+        if _CAROUSEL_ANIMATION_STEPS > 3:
+            _CAROUSEL_ANIMATION_STEPS = 3
+            return "reducing future transitions to three frames"
+        # Regional rendering is optional. If even three frames miss the budget,
+        # stop animating and use the normal cached full-screen render instead.
+        _CAROUSEL["error"] = True
+        _CAROUSEL["target"] = None
+        _CAROUSEL["generation"] += 1
+        _CAROUSEL_WAKE.set()
+        return "disabling animation in favour of instant navigation"
+
+
 def _carousel_worker():
     """Animate only the carousel band; never ask the main renderer for a full frame."""
+    global _CAROUSEL_ANIMATION_STEPS
     while not _CAROUSEL_STOP.is_set():
         now = time.monotonic()
         with _CAROUSEL_LOCK:
@@ -857,7 +877,7 @@ def _carousel_worker():
         # includes image composition and regional framebuffer writes.
         transition_started = time.monotonic()
         duration = 0.18
-        steps = 6
+        steps = max(3, min(6, int(_CAROUSEL_ANIMATION_STEPS)))
         interrupted = False
         for step in range(1, steps+1):
             fraction = step / steps
@@ -927,10 +947,15 @@ def _carousel_worker():
                 _CAROUSEL["next_auto"] = time.monotonic() + interval
                 _CAROUSEL_WAKE.clear()
                 logger = _CAROUSEL_LOGGER
+        slow_action = _adapt_carousel_after_slow_transition(transition_elapsed)
         if logger is not None:
             prefix = "SLOW " if transition_elapsed > 0.5 else ""
+            suffix = f"; {slow_action}" if slow_action else ""
             try:
-                logger(f"{prefix}V2 carousel transition {transition_elapsed:.2f}s ({steps} regional frames)")
+                logger(
+                    f"{prefix}V2 carousel transition {transition_elapsed:.2f}s "
+                    f"({steps} regional frames){suffix}"
+                )
             except Exception:
                 pass
 
