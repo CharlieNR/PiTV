@@ -11,6 +11,8 @@ import pitv_tvui
 
 class CarouselSmokeTests(unittest.TestCase):
     def setUp(self):
+        self.saved_animation_steps = pitv_tvui._CAROUSEL_ANIMATION_STEPS
+        pitv_tvui._CAROUSEL_ANIMATION_STEPS = 6
         self.saved_carousel = {
             key: (list(value) if key == "items" else value)
             for key, value in pitv_tvui._CAROUSEL.items()
@@ -37,6 +39,7 @@ class CarouselSmokeTests(unittest.TestCase):
         pitv_tvui._CAROUSEL_WAKE.clear()
 
     def tearDown(self):
+        pitv_tvui._CAROUSEL_ANIMATION_STEPS = self.saved_animation_steps
         with pitv_tvui._CAROUSEL_LOCK:
             pitv_tvui._CAROUSEL.update(self.saved_carousel)
         pitv_tvui._CAROUSEL_WAKE.clear()
@@ -109,6 +112,17 @@ class CarouselSmokeTests(unittest.TestCase):
         self.assertEqual(pitv_tvui.carousel_index(), 1)
         self.assertIsNone(pitv_tvui._CAROUSEL["target"])
         self.assertEqual(pitv_tvui.carousel_revision(), original_revision + 1)
+
+    def test_slow_transitions_reduce_frames_then_fall_back_to_instant_moves(self):
+        first = pitv_tvui._adapt_carousel_after_slow_transition(0.61)
+        self.assertIn("three frames", first)
+        self.assertEqual(pitv_tvui._CAROUSEL_ANIMATION_STEPS, 3)
+        self.assertFalse(pitv_tvui._CAROUSEL["error"])
+
+        second = pitv_tvui._adapt_carousel_after_slow_transition(0.55)
+        self.assertIn("instant navigation", second)
+        self.assertTrue(pitv_tvui._CAROUSEL["error"])
+        self.assertIsNone(pitv_tvui._CAROUSEL["target"])
 
     def test_manual_navigation_is_ignored_outside_home(self):
         pitv_tvui._CAROUSEL["view"] = "SETTINGS"
