@@ -5155,6 +5155,39 @@ def main(stdscr):
     except curses.error:
         pass
 
+    # Version 2 starts on a clean framebuffer. Warm first-use fonts, icons,
+    # shortcut artwork and carousel sizes before showing the first frame; if
+    # V2 is unavailable, stay blank and retry it instead of showing curses UI.
+    if UI_VERSION == "2":
+        try:
+            pitv_framebuffer.clear_framebuffer()
+        except Exception as exc:
+            log(f"Could not clear framebuffer before V2 startup: {type(exc).__name__}: {exc}")
+        if _ensure_v2_renderer():
+            try:
+                warm_home_items = [
+                    (label, key, MODERN_HOME_ITEMS[index][2])
+                    for index, (label, _cmd, key) in enumerate(ART_OPTIONS)
+                ]
+                warm_started = time.monotonic()
+                warm_stats = pitv_tvui.warm_render_cache(
+                    home_items=warm_home_items,
+                    carousel_games=_available_carousel_games(),
+                    recent_games=_recent_game_items(),
+                )
+                log(
+                    "V2 startup artwork warm-up {:.2f}s "
+                    "(carousel {}, recent {})".format(
+                        time.monotonic() - warm_started,
+                        warm_stats.get("carousel_games", 0),
+                        warm_stats.get("recent_games", 0),
+                    )
+                )
+            except Exception as exc:
+                log(f"V2 startup warm-up failed; renderer will retry normally: {type(exc).__name__}: {exc}")
+        else:
+            _wait_for_v2_renderer()
+
     frame       = 0
     last_view   = None
 
