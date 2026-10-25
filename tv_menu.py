@@ -713,7 +713,10 @@ def listen_fifo():
                     # process owns the CEC bus, so cec-cmd.sh can free and reuse
                     # it regardless of which user Homebridge runs as.
                     if cmd in ("TV_ON", "TV_OFF"):
-                        log(f"HomeKit CEC: {cmd}")
+                        # Apply the requested state immediately; the CEC listener
+                        # will correct it if the TV does not acknowledge the change.
+                        log(f"TV power request: {cmd}")
+                        _set_tv_power("on" if cmd == "TV_ON" else "off")
                         _run_cec_cmd("on 0" if cmd == "TV_ON" else "standby 0")
                         continue
 
@@ -868,16 +871,29 @@ def _set_external_game_state(active: bool) -> None:
 
 tv_power_state = "unknown"
 tv_input_phys  = None
+# True while the PiTV interface is in its low-activity TV-standby state. The
+# CEC listener and command/control services intentionally remain available so
+# that a TV-on event can wake the interface without rebooting the Raspberry Pi.
+tv_power_sleeping = False
 
 
 def _set_tv_power(state):
-    """Record the TV's power state and publish it to a file the Homebridge
-    plugin reads, so powering the TV on/off with the PHYSICAL remote shows up
-    in the Home app."""
+    """Publish the TV state and gracefully stop foreground activity on standby.
+
+    This function is called by the persistent CEC listener for physical-remote
+    changes and by the signed Homebridge/CLI command paths. It never shuts down
+    the Raspberry Pi or stops the listener required to wake PiTV again.
+    """
     global tv_power_state
-    if state != tv_power_state:
+    previous = tv_power_state
+    if state != previous:
         tv_power_state = state
         log(f"TV power -> {state}")
+        if state == "off":
+            # Give games, mirroring and screensavers their normal exit signal.
+            # The main loop will then blank the display and enter low-activity
+            # sleep while CEC, web control and Homebridge stay available.
+            input_queue[:] = ["HOME"]
     try:
         with open(TV_STATE_FILE, "w") as f:
             f.write(state)
@@ -5133,7 +5149,7 @@ def main(stdscr):
     global otp_fail_count, system_locked, log_visible
     global lock_fail_count, hard_locked
     global controller_mode, fake_off_active, force_home_requested
-    global _GRAPHIC_UI_FAILED
+    global _GRAPHIC_UI_FAILED, tv_power_sleeping
 
     curses.curs_set(0)
     stdscr.nodelay(True)
@@ -5202,6 +5218,45 @@ def main(stdscr):
     last_key_time = 0.0
 
     while True:
+        # Follow the TV's real CEC power state. Keep this process alive so it
+        # can detect the next physical-remote or network power-on event; only
+        # suspend PiTV's foreground activity/rendering, never Linux itself.
+        if tv_power_state == "off":
+            if not tv_power_sleeping:
+                tv_power_sleeping = True
+                current_view = "MENU"
+                fake_off_active = False
+                force_home_requested = False
+                active_art_type = None
+                art_stop_time = None
+                input_queue.clear()
+                _reset_graphic_ui_cache()
+                try:
+                    if UI_VERSION == "2":
+                        pitv_framebuffer.clear_framebuffer()
+                    else:
+                        stdscr.erase()
+                        stdscr.refresh()
+                except Exception as exc:
+                    log(f"TV-off display clear failed: {type(exc).__name__}: {exc}")
+                last_view = None
+                log("TV is in standby; PiTV interface sleeping. Raspberry Pi and wake controls remain on.")
+            # A slow idle loop avoids drawing animated frames while the TV is off.
+            time.sleep(1.0)
+            continue
+
+        if tv_power_sleeping:
+            tv_power_sleeping = False
+            current_view = "MENU"
+            fake_off_active = False
+            force_home_requested = False
+            active_art_type = None
+            art_stop_time = None
+            input_queue.clear()
+            _reset_graphic_ui_cache()
+            last_view = None
+            log("TV is on; PiTV interface resumed.")
+
         if settings_message and settings_message_until and time.monotonic() >= settings_message_until:
             settings_message = ""
             settings_message_until = 0.0

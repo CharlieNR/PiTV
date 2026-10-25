@@ -16,7 +16,7 @@ PiTV also includes admin and guest web pages. The guest page is handy when frien
 
 ## Features
 
-- **TV controls:** power and HDMI input switching through HDMI-CEC, when supported by your TV and HDMI setup.
+- **TV controls and standby sleep:** power and HDMI input switching through HDMI-CEC. When the TV enters standby, PiTV exits its current foreground activity, clears the display and sleeps its render loop; it resumes on the home screen when the TV powers on. The Raspberry Pi and its CEC/web/Homebridge wake controls remain running, so this is not an operating-system shutdown. Requires the TV and HDMI path to report CEC power state reliably.
 - **On-screen menu:** Version 2 is the factory-default image-led TV interface, drawing directly to the Linux framebuffer (no desktop required). Its home screen has an animated game carousel with page dots, five quick shortcuts and a persistent Recently Played row. Carousel autoplay and interval are configurable. The Settings tab provides nested on-TV menus for controllers, player PINs, guest access, system updates/restarts and logs. Version 1 remains available as the Classic backup. Choose either with `screen version 1` or `screen version 2`; the setting persists and takes effect after restarting `pitv-menu.service`.
 - **Apple Home (optional):** a Homebridge TV tile for power, inputs and remote-key navigation, plus Guest Mode, Kill Switch and Joke Mode switches.
 - **Admin page:** manage accounts and TV controls from a browser.

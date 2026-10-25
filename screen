@@ -20,7 +20,7 @@ Navigation:
 
 TV power:
   screen on
-  screen off                 physically switch the TV to standby
+  screen off                 switch the TV to standby; PiTV sleeps when detected
   screen off fake            blank the PiTV screen until Back/Home is pressed
   screen status              show whether the TV is on or off
 

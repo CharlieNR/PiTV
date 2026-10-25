@@ -127,5 +127,36 @@ class GraphicsRecoveryTests(unittest.TestCase):
 
 
 
+class TVPowerSleepRequestTests(unittest.TestCase):
+    """TV standby must stop foreground activity without shutting down the Pi."""
+
+    def setUp(self):
+        self.old_power_state = tv_menu.tv_power_state
+        self.old_input_queue = list(tv_menu.input_queue)
+
+    def tearDown(self):
+        tv_menu.tv_power_state = self.old_power_state
+        tv_menu.input_queue[:] = self.old_input_queue
+
+    def test_new_standby_state_requests_foreground_activity_exit(self):
+        tv_menu.tv_power_state = "on"
+        tv_menu.input_queue[:] = ["LEFT", "SELECT"]
+
+        with patch.object(tv_menu, "TV_STATE_FILE", "/dev/null"), patch.object(tv_menu, "log"):
+            tv_menu._set_tv_power("off")
+
+        self.assertEqual(tv_menu.tv_power_state, "off")
+        self.assertEqual(tv_menu.input_queue, ["HOME"])
+
+    def test_repeated_standby_poll_does_not_repeat_exit_signal(self):
+        tv_menu.tv_power_state = "off"
+        tv_menu.input_queue[:] = ["SELECT"]
+
+        with patch.object(tv_menu, "TV_STATE_FILE", "/dev/null"), patch.object(tv_menu, "log"):
+            tv_menu._set_tv_power("off")
+
+        self.assertEqual(tv_menu.input_queue, ["SELECT"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
