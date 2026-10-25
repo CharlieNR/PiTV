@@ -242,11 +242,11 @@ getent group pitv >/dev/null || sudo groupadd pitv
 # approved updates, a PiTV menu restart, or a device reboot; it cannot pass
 # arbitrary shell commands through sudo. The helper and deployment runner are
 # installed root-owned outside the user-writable checkout.
-if [ ! -f pitv-maintenance.py ]; then
-    echo "ERROR: pitv-maintenance.py is missing from the checkout."
-    exit 1
+if [ -f pitv-maintenance.py ]; then
+    sudo install -D -o root -g root -m 0755 pitv-maintenance.py /usr/local/sbin/pitv-maintenance
+else
+    echo "This branch predates the TV maintenance helper; keeping the already-installed helper."
 fi
-sudo install -D -o root -g root -m 0755 pitv-maintenance.py /usr/local/sbin/pitv-maintenance
 sudo install -D -o root -g root -m 0755 deploy.sh /usr/local/lib/pitv/deploy-runner.sh
 MAINT_CONFIG="$(/usr/bin/python3 -c 'import json,sys; print(json.dumps({"user":sys.argv[1],"home":sys.argv[2],"repo":sys.argv[2]+"/PiTV"}))' "$PITV_USER" "$PITV_HOME")"
 printf '%s\n' "$MAINT_CONFIG" | sudo tee /etc/pitv/maintenance.json >/dev/null
