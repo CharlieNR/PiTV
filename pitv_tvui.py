@@ -207,7 +207,7 @@ def _native_resolution(canvas):
     ratio_src = canvas.width / canvas.height
     ratio_dst = target[0] / target[1]
     if abs(ratio_src - ratio_dst) < 0.002:
-        return canvas.resize(target, method=method)
+        return canvas.resize(target, resample=method)
 
     fitted = ImageOps.contain(canvas, target, method=method)
     output = Image.new("RGB", target, (0, 0, 0))
