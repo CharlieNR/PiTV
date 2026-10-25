@@ -30,15 +30,29 @@ ALLOWED_BRANCHES = {"experimental", "main"}
 
 
 def _append_log(message: str) -> None:
-    """Append a bounded, timestamped line without writing credentials."""
-    message = re.sub(r"[\r\n\t]+", " ", str(message)).strip()
-    message = message[:700]
+    """Append a bounded line without following attacker-planted /tmp symlinks."""
+    message = re.sub(r"[\r\n\t]+", " ", str(message)).strip()[:700]
+    fd = -1
     try:
-        with LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(f"[{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}] {message}\n")
-        os.chmod(LOG_PATH, 0o644)
+        # /tmp is writable by other local processes; O_NOFOLLOW prevents this
+        # root helper from appending log text to an arbitrary symlink target.
+        flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(LOG_PATH), flags, 0o644)
+        os.fchmod(fd, 0o644)
+        handle = os.fdopen(fd, "a", encoding="utf-8")
+        fd = -1
+        with handle:
+            handle.write(
+                f"[{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}] {message}\n"
+            )
     except OSError:
         pass
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _write_status(status: str, message: str, branch: str = "") -> None:
@@ -71,6 +85,8 @@ def _write_status(status: str, message: str, branch: str = "") -> None:
 def _read_config() -> dict:
     if os.geteuid() != 0:
         raise RuntimeError("This helper must be invoked via its restricted sudo rule.")
+    if CONFIG_PATH.is_symlink():
+        raise RuntimeError("Maintenance configuration must not be a symlink.")
     st = CONFIG_PATH.stat()
     if st.st_uid != 0 or st.st_mode & 0o022:
         raise RuntimeError("Maintenance configuration must be root-owned and not group/world-writable.")
@@ -136,24 +152,35 @@ def _install_next_runner(config: dict) -> None:
 
 def _backup_state(config: dict, branch: str) -> str:
     home = Path(config["home"])
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
     root = home / "pitv-update-backups"
+    if root.is_symlink():
+        raise RuntimeError("Refusing to use a symlink as the private backup directory.")
     destination = root / f"{stamp}-{branch}"
     root.mkdir(mode=0o700, exist_ok=True)
-    os.chown(root, pwd.getpwnam(config["user"]).pw_uid, pwd.getpwnam(config["user"]).pw_gid)
+    uid = pwd.getpwnam(config["user"]).pw_uid
+    gid = pwd.getpwnam(config["user"]).pw_gid
+    os.chown(root, uid, gid)
     os.chmod(root, 0o700)
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError("The private backup destination already exists.")
     destination.mkdir(mode=0o700)
-    os.chown(destination, pwd.getpwnam(config["user"]).pw_uid, pwd.getpwnam(config["user"]).pw_gid)
+    os.chown(destination, uid, gid)
+    os.chmod(destination, 0o700)
     pitv_dir = home / ".pitv"
+    if pitv_dir.is_symlink():
+        raise RuntimeError("Refusing to back up ~/.pitv through a symbolic link.")
     if pitv_dir.is_dir():
         target = destination / "pitv"
-        shutil.copytree(pitv_dir, target, symlinks=False)
-        uid = pwd.getpwnam(config["user"]).pw_uid
-        gid = pwd.getpwnam(config["user"]).pw_gid
+        # Copy symlinks as symlinks; do not let a root backup traverse paths
+        # placed by the unprivileged PiTV account outside its own state folder.
+        shutil.copytree(pitv_dir, target, symlinks=True)
         for item in [target, *target.rglob("*")]:
+            if item.is_symlink():
+                continue
             try:
-                os.chown(item, uid, gid)
-                os.chmod(item, 0o700 if item.is_dir() else 0o600)
+                os.chown(item, uid, gid, follow_symlinks=False)
+                os.chmod(item, 0o700 if item.is_dir() else 0o600, follow_symlinks=False)
             except OSError:
                 pass
     control_key = Path("/etc/pitv/control.key")
@@ -181,9 +208,15 @@ def _update_worker(branch: str) -> int:
 
     _write_status("running", f"Preparing update from {branch}.", branch)
     _append_log(f"Update requested for branch {branch}.")
-    origin = _git_checked(config, ["remote", "get-url", "origin"], "Checking repository origin")
-    if not re.search(r"(^|[:/])CharlieNR/PiTV(\.git)?$", origin, re.IGNORECASE):
-        raise RuntimeError("Refusing update: origin is not recognised as CharlieNR/PiTV.")
+    origin = _git_checked(config, ["remote", "get-url", "origin"], "Checking repository origin").strip()
+    trusted_origins = {
+        "https://github.com/charlienr/pitv",
+        "https://github.com/charlienr/pitv.git",
+        "git@github.com:charlienr/pitv.git",
+        "ssh://git@github.com/charlienr/pitv.git",
+    }
+    if origin.rstrip("/").lower() not in trusted_origins:
+        raise RuntimeError("Refusing update: origin must be the official CharlieNR/PiTV GitHub repository.")
     if not RUNNER_PATH.is_file() or RUNNER_PATH.is_symlink():
         raise RuntimeError("Trusted deployment runner is missing. Run deploy.sh from the PiTV checkout once.")
 
