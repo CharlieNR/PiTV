@@ -11,6 +11,63 @@ from typing import Any
 
 from PIL import Image, ImageMath
 
+
+# Native RGB565 converter: the PiTV Pi framebuffer reports RGB565 (16-bit).
+# The compiled helper lives beside this module in /opt/pitv. If it is absent
+# or fails to load, the established NumPy/Pillow converters remain available.
+_RGB565_PACKER = None
+try:
+    import ctypes
+    _rgb565_library = ctypes.CDLL(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "pitv_rgb565.so")
+    )
+    _RGB565_PACKER = _rgb565_library.pitv_pack_rgb565
+    _RGB565_PACKER.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int,
+    ]
+    _RGB565_PACKER.restype = None
+except (ImportError, OSError, AttributeError):
+    _RGB565_PACKER = None
+
+
+def _pack_rgb565_native(
+    canvas: Image.Image, info: dict[str, Any],
+    source_width: int, source_height: int,
+):
+    """Pack an entire RGB565 framebuffer in native code, if the format matches."""
+    if _RGB565_PACKER is None:
+        return None
+    if (
+        info.get("bits_per_pixel") != 16
+        or info.get("red") != (11, 5, 0)
+        or info.get("green") != (5, 6, 0)
+        or info.get("blue") != (0, 5, 0)
+        or info.get("transparency", (0, 0, 0))[1] != 0
+    ):
+        return None
+
+    width, height = int(info["width"]), int(info["height"])
+    line_length = int(info["line_length"])
+    xoffset_bytes = int(info["xoffset"]) * 2
+    rgb = canvas.tobytes()
+    frame = bytearray(line_length * height)
+    output_view = (ctypes.c_uint8 * len(frame)).from_buffer(frame)
+    _RGB565_PACKER(
+        ctypes.c_char_p(rgb), output_view,
+        width, height, line_length, xoffset_bytes,
+        int(sys.byteorder == "big"),
+    )
+    return {
+        "frame": bytes(frame),
+        "info": info,
+        "source_width": source_width,
+        "source_height": source_height,
+        "packing_method": "c-rgb565",
+    }
+
+
 FBIOGET_VSCREENINFO = 0x4600
 FBIOGET_FSCREENINFO = 0x4602
 FBIOPAN_DISPLAY = 0x4606
@@ -312,6 +369,12 @@ def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any
             "source_height": source_height,
             "packing_method": "pillow-raw",
         }
+
+    # PiTV's actual framebuffer is RGB565. Prefer this single native call before
+    # falling back to generic pixel conversion (which takes seconds on a Pi Zero).
+    native_rgb565 = _pack_rgb565_native(canvas, info, source_width, source_height)
+    if native_rgb565 is not None:
+        return native_rgb565
 
     vectorised = _pack_with_numpy(canvas, info)
     if vectorised is not None:

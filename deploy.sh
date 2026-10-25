@@ -128,7 +128,7 @@ chmod +x *.sh *.py 2>/dev/null || true
 sudo mkdir -p /opt/pitv
 
 # Safely copy scripts, configs, and service files (skipping hidden folders like .git)
-sudo cp -f *.sh *.py *.service /opt/pitv/ 2>/dev/null || true
+sudo cp -f *.sh *.py *.service *.c /opt/pitv/ 2>/dev/null || true
 sudo cp -f .gitignore VERSION /opt/pitv/ 2>/dev/null || true
 
 # Install the bundled offline Lucide SVGs required by V2. The renderer creates
@@ -149,6 +149,24 @@ sudo chown root:root /opt/pitv
 sudo chmod 755 /opt/pitv
 sudo chown root:root /opt/pitv/*.py /opt/pitv/*.sh /opt/pitv/*.service
 sudo chmod 755 /opt/pitv/*.py /opt/pitv/*.sh
+
+# Build the native RGB565 framebuffer converter. This turns pixel packing into
+# one compiled-code pass instead of millions of slow ImageMath pixel operations.
+# Build to a temporary file so a failed compile never deletes a working helper.
+if [ -f /opt/pitv/pitv_rgb565.c ] && command -v cc >/dev/null 2>&1; then
+    if sudo cc -O3 -fPIC -shared -Wall -Wextra \
+        -o /opt/pitv/pitv_rgb565.so.new /opt/pitv/pitv_rgb565.c; then
+        sudo mv -f /opt/pitv/pitv_rgb565.so.new /opt/pitv/pitv_rgb565.so
+        sudo chown root:root /opt/pitv/pitv_rgb565.so
+        sudo chmod 755 /opt/pitv/pitv_rgb565.so
+        echo "Native RGB565 framebuffer converter ready."
+    else
+        sudo rm -f /opt/pitv/pitv_rgb565.so.new
+        echo "WARNING: native RGB565 converter could not be compiled; using safe Python fallback."
+    fi
+else
+    echo "WARNING: C compiler unavailable; using safe Python fallback for framebuffer conversion."
+fi
 
 # Copy the Homebridge TV plugin folder AND reinstall it into Homebridge.
 # npm copies the plugin at install time, so refreshing /opt/pitv alone doesn't
