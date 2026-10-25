@@ -4585,8 +4585,9 @@ def _settings_submit_input():
         if not (len(value) == 6 and value.isdigit()):
             _settings_set_message("The admin code must be exactly six digits.")
             return
-        existing = pitv_state.load_section("PLAYER_PINS", {})
-        clash = next((name for name, pin in existing.items() if str(pin) == value), None) if isinstance(existing, dict) else None
+        existing = pitv_pins.all_pin_records()
+        clash_record = next((record for record in existing if str(record.get("pin", "")) == value), None)
+        clash = clash_record.get("name") if clash_record else None
         if clash:
             _settings_set_message(f"That code is already {clash}'s player PIN.")
             return
@@ -4688,7 +4689,17 @@ def _settings_pair_bluetooth(address):
 
 def _settings_execute_confirm():
     global current_view, settings_page, settings_selected, settings_authorized_until
+    global settings_pending_page, settings_auth_entered, settings_key_row, settings_key_col
     action = settings_confirm_action
+    if (settings_confirm_return_page in _SETTINGS_PROTECTED_PAGES
+            and time.monotonic() >= settings_authorized_until):
+        settings_pending_page = settings_confirm_return_page
+        settings_auth_entered = ""
+        settings_key_row = settings_key_col = 0
+        settings_page = settings_confirm_return_page
+        current_view = "SETTINGS_AUTH"
+        _settings_set_message("Authorisation expired. Re-enter the admin code; then review the action again.")
+        return
     settings_page = settings_confirm_return_page
     current_view = "SETTINGS_LOG" if settings_page == "LOGS_VIEW" else "SETTINGS"
     if action == "CLEAR_RECENTS":
