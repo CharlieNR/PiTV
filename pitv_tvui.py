@@ -794,6 +794,62 @@ def _draw_lock(canvas, state):
 
 
 
+
+def _draw_music(canvas, state):
+    """Dedicated full-screen, image-rendered AirPlay status page for V2."""
+    d = ImageDraw.Draw(canvas)
+    connected = bool(state.get("music_connected"))
+    device = str(state.get("music_device") or "").strip()
+    title = str(state.get("music_title") or "").strip()
+    artist = str(state.get("music_artist") or "").strip()
+
+    logo = pitv_artwork.load_icon("monitor", size=30)
+    canvas.paste(logo, (46, 22), logo)
+    _label(d, (86, 24), "PiTV", 23, WHITE, True)
+    _label(d, (162, 29), "STREAM MUSIC", 14, (119, 190, 255), True)
+    status = "CONNECTED" if connected else "READY FOR AIRPLAY"
+    status_fill = (17, 92, 94) if connected else (29, 58, 92)
+    _pill(d, (1004, 20, 1234, 58), status, status_fill, WHITE, 12)
+    d.line((40, 72, 1240, 72), fill=(35, 59, 94), width=1)
+
+    d.rounded_rectangle((150, 108, 1130, 618), radius=30,
+                        fill=(10, 20, 43), outline=(39, 67, 108), width=2)
+
+    # Use the bundled AirPlay SVG artwork instead of a text glyph or approximation.
+    icon_size = 82 if not connected else 64
+    airplay = pitv_artwork.load_icon("airplay", size=icon_size)
+    icon_box = (590, 145, 690, 245)
+    d.rounded_rectangle(icon_box, radius=24, fill=(16, 43, 78),
+                        outline=(41, 96, 151), width=2)
+    icon_x = icon_box[0] + (100 - icon_size) // 2
+    icon_y = icon_box[1] + (100 - icon_size) // 2
+    canvas.paste(airplay, (icon_x, icon_y), airplay)
+
+    if not connected:
+        _label(d, (640, 307), "Ready to play music", 32, WHITE, True, anchor="mm")
+        _label(d, (640, 356), "Select PiTV from the AirPlay menu on your device.", 19,
+               (187, 205, 231), anchor="mm")
+        _label(d, (640, 394), "Your music will play through the TV audio system.",
+               16, MUTED, anchor="mm")
+    elif title:
+        _label(d, (640, 292), "NOW PLAYING", 13, (117, 195, 255), True, anchor="mm")
+        title_text = title if len(title) <= 54 else title[:51].rstrip() + "..."
+        artist_text = artist if len(artist) <= 76 else artist[:73].rstrip() + "..."
+        _label(d, (640, 350), title_text, 29, WHITE, True, anchor="mm")
+        if artist_text:
+            _label(d, (640, 393), artist_text, 19, (187, 205, 231), anchor="mm")
+        if device:
+            device_text = device if len(device) <= 65 else device[:62].rstrip() + "..."
+            _label(d, (640, 464), "Playing from " + device_text, 15, MUTED, anchor="mm")
+    else:
+        connected_text = device if len(device) <= 58 else device[:55].rstrip() + "..."
+        _label(d, (640, 315), "Connected and ready", 30, WHITE, True, anchor="mm")
+        _label(d, (640, 362), connected_text or "AirPlay device", 20,
+               (187, 205, 231), anchor="mm")
+        _label(d, (640, 405), "Start playing audio on your device.", 16, MUTED, anchor="mm")
+
+    _label(d, (640, 665), "BACK   RETURN TO PiTV", 14, MUTED, True, anchor="mm")
+
 def _draw_overlay(canvas, overlay):
     if not overlay:
         return
@@ -850,6 +906,8 @@ def render(state, log_fn=None):
     elif view == "KEYPAD":
         _nav(canvas, "GAMES", now)
         _draw_keypad(canvas, state)
+    elif view == "MUSIC":
+        _draw_music(canvas, state)
     elif view in ("CLEAR", "FAKE_OFF"):
         canvas = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     else:

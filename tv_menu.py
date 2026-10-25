@@ -2954,30 +2954,66 @@ def run_mirror(stdscr):
 
         return title, artist
 
+    graphic_music_active = (
+        UI_VERSION == "2"
+        and GRAPHIC_UI_AVAILABLE
+        and not _GRAPHIC_UI_FAILED
+        and pitv_tvui is not None
+    )
+    fallback_cleared = False
+
     def _draw(stdscr, connected, device, title, artist):
+        nonlocal graphic_music_active, fallback_cleared
+
+        if graphic_music_active:
+            try:
+                pitv_tvui.render({
+                    "view": "MUSIC",
+                    "music_connected": bool(connected),
+                    "music_device": str(device or ""),
+                    "music_title": str(title or ""),
+                    "music_artist": str(artist or ""),
+                }, log_fn=log)
+                return
+            except Exception as exc:
+                graphic_music_active = False
+                log(f"V2 Stream Music renderer failed; using a clean fallback screen: {exc!r}")
+                for trace_line in traceback.format_exception(
+                    type(exc), exc, exc.__traceback__
+                ):
+                    for trace_part in trace_line.rstrip().splitlines():
+                        log(f"Music traceback: {trace_part}")
+                try:
+                    pitv_framebuffer.clear_framebuffer()
+                except Exception:
+                    pass
+                fallback_cleared = True
+
+        # Any terminal fallback must start from a cleared framebuffer so its
+        # text can never sit on top of the previous graphical home screen.
+        if UI_VERSION == "2" and not fallback_cleared:
+            try:
+                pitv_framebuffer.clear_framebuffer()
+            except Exception:
+                pass
+            fallback_cleared = True
+
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
         attr = curses.color_pair(2) | curses.A_BOLD
-
         if not connected:
-            lines = ["Connect to PiTV to stream Music"]
+            lines = ["STREAM MUSIC", "", "Connect to PiTV from your device's AirPlay menu."]
         elif title:
-            lines = [title]
-            if artist:
-                lines.append(artist)
+            lines = ["STREAM MUSIC", "", title, artist] if artist else ["STREAM MUSIC", "", title]
         else:
-            connected_device = device or "Device"
-            lines = [f"{connected_device} is connected to the screen"]
-
-        # Wrap only when the TV console is too narrow for the requested text.
-        wrapped = []
+            lines = ["STREAM MUSIC", "", f"{device or 'Device'} is connected.", "Start playing audio."]
         width = max(8, max_x - 4)
+        wrapped = []
         for line in lines:
             if len(line) <= width:
                 wrapped.append(line)
             else:
                 wrapped.extend([line[i:i + width] for i in range(0, len(line), width)])
-
         start_y = max(0, (max_y - len(wrapped)) // 2)
         for n, line in enumerate(wrapped):
             x = max(0, (max_x - len(line)) // 2)
@@ -2985,7 +3021,10 @@ def run_mirror(stdscr):
                 stdscr.addstr(start_y + n, x, line[:max_x - x], attr)
             except curses.error:
                 pass
-
+        try:
+            stdscr.addstr(max_y - 1, 0, "BACK  RETURN TO PiTV".center(max_x - 1), curses.A_DIM)
+        except curses.error:
+            pass
         stdscr.refresh()
 
     _cleanup_files()
@@ -3029,6 +3068,7 @@ def run_mirror(stdscr):
 
         stdscr.nodelay(True)
         controller_mode = "MENU"
+        _draw(stdscr, False, "", "", "")
 
         while True:
             command = None
@@ -3085,7 +3125,13 @@ def run_mirror(stdscr):
         # disabled makes the main loop appear frozen until another key arrives.
         stdscr.nodelay(True)
         stdscr.clear()
-        stdscr.refresh()
+        if not graphic_music_active:
+            stdscr.refresh()
+        else:
+            try:
+                pitv_tvui.reset_cache()
+            except Exception:
+                pass
         log("Music receiver: stopped")
 
 
