@@ -183,17 +183,33 @@ def _background():
     return Image.alpha_composite(image.convert("RGBA"), glow).convert("RGB")
 
 
-def _native_resolution(canvas):
-    """Scale with a proper image filter before the framebuffer's nearest resize."""
+@lru_cache(maxsize=1)
+def _native_framebuffer_size():
+    """Read the stable display geometry once instead of querying fbdev per redraw."""
     try:
         with open("/dev/fb0", "r+b", buffering=0) as fb:
             info = pitv_framebuffer._framebuffer_info(fb.fileno())
-        target = (int(info["width"]), int(info["height"]))
+        return (int(info["width"]), int(info["height"]))
     except (OSError, AttributeError, RuntimeError, ValueError, KeyError):
+        return None
+
+
+def _native_resolution(canvas):
+    """Resize in native code with the cheapest filter appropriate for the scale."""
+    target = _native_framebuffer_size()
+    if target is None or target == canvas.size:
         return canvas
-    if target == canvas.size:
-        return canvas
-    fitted = ImageOps.contain(canvas, target, method=_RESAMPLING.LANCZOS)
+
+    # Upscaling is common on HDMI TVs. Nearest-neighbour is effectively free
+    # compared with Lanczos and keeps the text crisp instead of softening it.
+    upscaling = target[0] >= canvas.width and target[1] >= canvas.height
+    method = _RESAMPLING.NEAREST if upscaling else _RESAMPLING.BILINEAR
+    ratio_src = canvas.width / canvas.height
+    ratio_dst = target[0] / target[1]
+    if abs(ratio_src - ratio_dst) < 0.002:
+        return canvas.resize(target, method=method)
+
+    fitted = ImageOps.contain(canvas, target, method=method)
     output = Image.new("RGB", target, (0, 0, 0))
     output.paste(fitted, ((target[0]-fitted.width)//2, (target[1]-fitted.height)//2))
     return output
@@ -482,6 +498,15 @@ def _fitted_artwork(key, width, height, source_width, source_height):
     return ImageOps.fit(art, (int(width), int(height)), method=_RESAMPLING.BILINEAR)
 
 
+@lru_cache(maxsize=32)
+def _shaded_artwork(key, width, height, source_width, source_height, left_alpha):
+    """Cache the tinted hero art so selection changes avoid rebuilding its shade."""
+    cover = _fitted_artwork(
+        str(key), int(width), int(height), int(source_width), int(source_height)
+    )
+    return _with_hero_shade(cover, int(left_alpha))
+
+
 @lru_cache(maxsize=128)
 def _cover_mask(width, height, radius):
     mask = Image.new("L", (width, height), 0)
@@ -563,8 +588,9 @@ def _draw_home(canvas, state):
     label, key, description = items[selected]
 
     hero_box = (48, 105, 1232, 352)
-    hero = _fitted_artwork(key, hero_box[2]-hero_box[0], hero_box[3]-hero_box[1], 840, 360)
-    hero = _with_hero_shade(hero)
+    hero = _shaded_artwork(
+        key, hero_box[2]-hero_box[0], hero_box[3]-hero_box[1], 840, 360, 185
+    )
     mask = Image.new("L", hero.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle((0,0,hero.width-1,hero.height-1),radius=22,fill=255)
     canvas.paste(hero, hero_box[:2], mask)
@@ -642,8 +668,9 @@ def _draw_duration(canvas, state):
     key=state.get("selected_art_key","CLOCK")
     _label(d,(54,78),"SCREENSAVERS",14,MUTED,True)
     hero_box=(48,101,1232,340)
-    cover=_fitted_artwork(key,hero_box[2]-hero_box[0],hero_box[3]-hero_box[1],840,360)
-    cover=_with_hero_shade(cover,155)
+    cover=_shaded_artwork(
+        key, hero_box[2]-hero_box[0], hero_box[3]-hero_box[1], 840, 360, 155
+    )
     mask=Image.new("L",cover.size,0)
     ImageDraw.Draw(mask).rounded_rectangle((0,0,cover.width-1,cover.height-1),radius=22,fill=255)
     canvas.paste(cover,hero_box[:2],mask)
@@ -855,9 +882,16 @@ def render(state, log_fn=None):
         try:
             log_fn(
                 "V2 graphic render {:.2f}s (draw {:.2f}s, scale {:.2f}s, "
-                "pixel packing {:.2f}s, framebuffer write {:.2f}s)".format(
+                "pixel packing {:.2f}s [{}; {}bpp R{} G{} B{}], "
+                "framebuffer write {:.2f}s)".format(
                     total_elapsed, draw_elapsed, scale_elapsed,
-                    prepare_elapsed, display_elapsed,
+                    prepare_elapsed,
+                    prepared.get("packing_method", "unknown"),
+                    prepared.get("info", {}).get("bits_per_pixel", "?"),
+                    prepared.get("info", {}).get("red", "?"),
+                    prepared.get("info", {}).get("green", "?"),
+                    prepared.get("info", {}).get("blue", "?"),
+                    display_elapsed,
                 )
             )
         except Exception:
