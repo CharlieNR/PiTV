@@ -5173,7 +5173,7 @@ def _settings_select_action(item):
             and settings_page in _SETTINGS_PROTECTED_PAGES
             and action not in ("CHANGE_EMERGENCY_CODE", "SHOW_VERSION", "MAINT_STATUS", "BACK", "BACK_HOME")):
         settings_page = "SYSTEM"
-        settings_selected = 6  # Change admin code
+        settings_selected = 7  # Change admin code; updater terminal added one item
         current_view = "SETTINGS"
         _settings_set_message("Set a private admin code before using protected Settings.")
         return
