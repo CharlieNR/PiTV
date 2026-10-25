@@ -345,7 +345,7 @@ def repeat_round(game_id):
 
 
 def next_round(game_id):
-    """Start a fresh match after the reveal, dealing new roles and a new word."""
+    """Start a fresh match after the reveal, dealing new roles, category and word."""
     with _transaction(True) as s:
         if not s.get("active") or s.get("game_id") != game_id or s.get("phase") != "revealed":
             return False
