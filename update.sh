@@ -89,7 +89,9 @@ else
         echo "No ~/.pitv settings directory found; nothing to back up there."
     fi
 
-    if sudo test -f /etc/pitv/control.key; then
+    if [[ "${PITV_SKIP_CONTROL_KEY_BACKUP:-0}" == "1" ]]; then
+        echo "Shared control-key backup is delegated to the privileged Settings updater."
+    elif sudo test -f /etc/pitv/control.key; then
         sudo cp -p /etc/pitv/control.key "$BACKUP_DIR/control.key"
         sudo chown "$(id -u):$(id -g)" "$BACKUP_DIR/control.key"
         chmod 600 "$BACKUP_DIR/control.key"
