@@ -4316,10 +4316,7 @@ def _settings_current_items():
         for device in settings_bt_devices[:8]:
             name, address = str(device[0]), str(device[1])
             items.append((name, "PAIR", f"Pair and connect {address}", "BT_PAIR", address))
-        items.extend([
-            ("Controller connection status", "", "Connected gamepads are logged by PiTV", "BT_STATUS"),
-            ("Back", "", "Return to Settings", "BACK"),
-        ])
+        items.append(("Back", "", "Return to Settings", "BACK"))
         return items
     if page == "PINS":
         items = [
