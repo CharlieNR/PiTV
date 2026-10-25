@@ -4304,8 +4304,11 @@ def _settings_current_items():
         items.append(("Back", "", "Return to Guest Access", "BACK"))
         return items
     if page == "SYSTEM":
+        maintenance = _settings_maintenance_status()
         return [
             ("Installed version", VERSION, "Version of the currently running menu", "SHOW_VERSION"),
+            ("Maintenance status", str(maintenance.get("status", "idle")).upper(),
+             str(maintenance.get("message", "No maintenance task this boot")), "MAINT_STATUS"),
             ("Update experimental", "", "Back up settings and update from experimental", "CONFIRM_UPDATE_EXPERIMENTAL"),
             ("Update stable / main", "", "Back up settings and update from main", "CONFIRM_UPDATE_STABLE"),
             ("Restart PiTV menu", "", "Restart only the menu service", "CONFIRM_RESTART_MENU"),
