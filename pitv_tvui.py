@@ -38,6 +38,13 @@ _FONT_NORMAL = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 _FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 _LAST_SIGNATURE = None
 _LAST_PREPARED = None
+_LAST_CLOCK_TEXT = None
+
+_NAV_CLOCK_VIEWS = {
+    "MENU", "DURATION_SELECT", "GAMES_MENU", "TTT_MODE", "IMPOSTER_COUNT",
+    "KEYPAD", "SETTINGS", "SETTINGS_AUTH", "SETTINGS_INPUT", "SETTINGS_STATUS",
+    "SETTINGS_LOG", "SETTINGS_CONFIRM",
+}
 
 # Time is corrected for the V2 display only; the Pi's system clock is not set.
 # The API runs in a daemon thread so an unavailable network cannot stall drawing.
@@ -555,9 +562,8 @@ def _lock_icon(draw, x, y, scale=1.0, colour=(222, 235, 255)):
         return
 
 
-def _nav(canvas, section, clock_text):
+def _nav(canvas, section, clock_text, nav_focus=False, nav_selected=0):
     d = ImageDraw.Draw(canvas)
-    # Use the official local Lucide SVG assets rather than approximate hand-drawn glyphs.
     logo = pitv_artwork.load_icon("monitor", size=30)
     canvas.paste(logo, (42, 18), logo)
     _label(d, (82, 20), "PiTV", 23, WHITE, True)
@@ -565,17 +571,29 @@ def _nav(canvas, section, clock_text):
         ("HOME", "MENU", 192, "house"),
         ("SCREENS", "DURATION_SELECT", 294, "monitor"),
         ("GAMES", "GAMES_MENU", 414, "gamepad-2"),
+        ("SETTINGS", "SETTINGS", 536, "settings"),
     ]
-    for label, active_view, x, icon_name in items:
-        active = ((section == "HOME" and label == "HOME")
-                  or (section == "SCREENS" and label == "SCREENS")
-                  or (section == "GAMES" and label == "GAMES"))
-        if active:
-            d.rounded_rectangle((x-13, 15, x+89, 51), radius=16, fill=(25, 71, 130))
-            d.rounded_rectangle((x-13, 46, x+89, 50), radius=2, fill=CYAN)
+    setting_views = {
+        "SETTINGS", "SETTINGS_AUTH", "SETTINGS_INPUT",
+        "SETTINGS_STATUS", "SETTINGS_LOG", "SETTINGS_CONFIRM",
+    }
+    for index, (label, active_view, x, icon_name) in enumerate(items):
+        active = (
+            (section == "HOME" and label == "HOME")
+            or (section == "SCREENS" and label == "SCREENS")
+            or (section == "GAMES" and label == "GAMES")
+            or (section in setting_views and label == "SETTINGS")
+        )
+        focused = bool(nav_focus and index == int(nav_selected))
+        if active or focused:
+            d.rounded_rectangle((x-13, 15, x+96, 51), radius=16,
+                                fill=(25, 71, 130) if active or focused else PANEL)
+            d.rounded_rectangle((x-13, 46, x+96, 50), radius=2,
+                                fill=CYAN if focused or active else (39, 63, 99))
         icon = pitv_artwork.load_icon(icon_name, size=19)
         canvas.paste(icon, (x-1, 20), icon)
-        _label(d, (x+24, 25), label, 14, WHITE if active else MUTED, active)
+        _label(d, (x+24, 25), label, 13,
+               WHITE if active or focused else MUTED, active or focused)
     _label(d, (1230, 29), clock_text, 15, MUTED, anchor="ra")
     d.line((40, 62, 1240, 62), fill=(35, 59, 94), width=1)
 
@@ -592,40 +610,438 @@ def _with_hero_shade(cover, left_alpha=185):
     return Image.alpha_composite(cover, overlay).convert("RGB")
 
 
+def _draw_carousel_strip(items, position):
+    """Render only the carousel strip; cards and source art are reused from LRU caches."""
+    strip = Image.new("RGB", (WIDTH, 295), (7, 13, 30))
+    d = ImageDraw.Draw(strip)
+    for band in range(24):
+        y0 = band * strip.height // 24
+        y1 = (band + 1) * strip.height // 24
+        d.rectangle((0, y0, WIDTH, y1),
+                    fill=_mix((8, 15, 34), (17, 36, 68), band / 23))
+    d.ellipse((360, -180, 920, 340), fill=(16, 43, 83))
+    d.line((38, 10, 1242, 10), fill=(26, 45, 75), width=1)
+
+    if not items:
+        d.rounded_rectangle((150, 42, 1130, 237), radius=24,
+                            fill=(12, 24, 48), outline=(42, 68, 105), width=2)
+        _label(d, (640, 115), "NO CAROUSEL GAMES AVAILABLE", 25, WHITE, True, anchor="mm")
+        _label(d, (640, 158), "Open Games to browse installed titles.", 16, MUTED, anchor="mm")
+        return strip
+
+    count = len(items)
+    pos = float(position) % count
+    visible = []
+    for index, item in enumerate(items):
+        distance = float(index) - pos
+        while distance > count / 2:
+            distance -= count
+        while distance < -count / 2:
+            distance += count
+        if abs(distance) <= 2.05:
+            visible.append((distance, item))
+    visible.sort(key=lambda pair: abs(pair[0]), reverse=True)
+
+    for distance, item in visible:
+        title, key, description = item
+        abs_distance = abs(distance)
+        scale = max(0.66, 1.0 - 0.18 * min(abs_distance, 1.9))
+        card_w = int(410 * scale)
+        card_h = int(218 * scale)
+        cx = int(WIDTH / 2 + distance * 354)
+        x0 = cx - card_w // 2
+        y0 = 30 + (218 - card_h) // 2
+        x1, y1 = x0 + card_w, y0 + card_h
+        active = abs_distance < 0.5
+        edge = CYAN if active else (35, 64, 103)
+        edge_width = 3 if active else 1
+        d.rounded_rectangle((x0-3, y0-3, x1+3, y1+3), radius=20,
+                            fill=(15, 31, 57), outline=edge, width=edge_width)
+        art = _fitted_artwork(str(key), card_w-10, card_h-10, 500, 260)
+        if not active:
+            art = Image.blend(art, Image.new("RGB", art.size, (3, 7, 18)),
+                              min(0.54, 0.20 + abs_distance * 0.15))
+        mask = _cover_mask(art.width, art.height, 15)
+        strip.paste(art, (x0+5, y0+5), mask)
+        # A dark lower ribbon keeps titles legible over any game artwork.
+        d.rounded_rectangle((x0+5, y1-57, x1-5, y1-5), radius=12,
+                            fill=(5, 12, 27))
+        title_size = 22 if active else 16
+        _label(d, (cx, y1-39), title, title_size,
+               WHITE if active else (195, 208, 229), True, anchor="mm")
+        if active and card_w > 350:
+            detail = str(description or "").strip()
+            if len(detail) > 58:
+                detail = detail[:55].rstrip() + "..."
+            _label(d, (cx, y1-16), detail, 12, (199, 216, 239), anchor="mm")
+
+    # TV-style pagination: the active dot is longer and brighter, not numeric.
+    dot_gap = 18
+    total_width = max(0, count-1) * dot_gap + 16
+    x_start = (WIDTH - total_width) // 2
+    selected = int(round(pos)) % count
+    for idx in range(count):
+        x = x_start + idx * dot_gap
+        if idx == selected:
+            d.rounded_rectangle((x-4, 275, x+12, 282), radius=4, fill=CYAN)
+        else:
+            d.ellipse((x, 276, x+6, 282), fill=(91, 112, 145))
+    return strip
+
+
+_CAROUSEL_LOCK = threading.RLock()
+_CAROUSEL_WAKE = threading.Event()
+_CAROUSEL_STOP = threading.Event()
+_CAROUSEL_THREAD = None
+_CAROUSEL = {
+    "view": None,
+    "items": [],
+    "position": 0.0,
+    "target": None,
+    "generation": 0,
+    "autoplay": True,
+    "interval": 8.0,
+    "pause_until": 0.0,
+    "next_auto": time.monotonic() + 8.0,
+    "error": False,
+}
+
+
+def carousel_index():
+    """Return the carousel's currently focused item, including in-flight moves."""
+    with _CAROUSEL_LOCK:
+        items = _CAROUSEL.get("items") or []
+        if not items:
+            return 0
+        return int(round(float(_CAROUSEL.get("position", 0.0)))) % len(items)
+
+
+def request_carousel_step(direction):
+    """Request a smooth one-card move; rapid input updates the pending target."""
+    direction = 1 if int(direction) > 0 else -1
+    with _CAROUSEL_LOCK:
+        items = _CAROUSEL.get("items") or []
+        if _CAROUSEL.get("view") != "MENU" or len(items) < 2:
+            return False
+        base = (_CAROUSEL["target"] if _CAROUSEL["target"] is not None
+                else round(float(_CAROUSEL["position"])))
+        _CAROUSEL["target"] = int(base) + direction
+        _CAROUSEL["generation"] += 1
+        _CAROUSEL["pause_until"] = time.monotonic() + 6.0
+        _CAROUSEL["next_auto"] = _CAROUSEL["pause_until"] + float(_CAROUSEL["interval"])
+        _CAROUSEL_WAKE.set()
+        return True
+
+
+def _sync_carousel_runtime(state):
+    global _CAROUSEL_THREAD
+    items = [tuple(item) for item in state.get("carousel_games", [])]
+    view = str(state.get("view", ""))
+    enabled = bool(state.get("carousel_autoplay", True))
+    try:
+        interval = min(30.0, max(4.0, float(state.get("carousel_interval", 8))))
+    except (TypeError, ValueError):
+        interval = 8.0
+    with _CAROUSEL_LOCK:
+        old_items = _CAROUSEL["items"]
+        changed_items = items != old_items
+        changed_view = view != _CAROUSEL["view"]
+        changed_settings = enabled != _CAROUSEL["autoplay"] or interval != _CAROUSEL["interval"]
+        _CAROUSEL["view"] = view
+        _CAROUSEL["autoplay"] = enabled
+        _CAROUSEL["interval"] = interval
+        if changed_items:
+            _CAROUSEL["items"] = items
+            requested = max(0, int(state.get("carousel_index", 0) or 0))
+            _CAROUSEL["position"] = float(requested % len(items)) if items else 0.0
+            _CAROUSEL["target"] = None
+            _CAROUSEL["generation"] += 1
+            _CAROUSEL["error"] = False
+        elif changed_view and view != "MENU":
+            # Cancel a transition before the new page is rendered.
+            _CAROUSEL["target"] = None
+            _CAROUSEL["position"] = float(round(_CAROUSEL["position"]))
+            _CAROUSEL["generation"] += 1
+        elif changed_view and view == "MENU":
+            _CAROUSEL["position"] = float(round(_CAROUSEL["position"]))
+            _CAROUSEL["target"] = None
+            _CAROUSEL["generation"] += 1
+        if changed_settings:
+            _CAROUSEL["next_auto"] = time.monotonic() + interval
+        _CAROUSEL_WAKE.set()
+        if _CAROUSEL_THREAD is None or not _CAROUSEL_THREAD.is_alive():
+            _CAROUSEL_STOP.clear()
+            _CAROUSEL_THREAD = threading.Thread(
+                target=_carousel_worker, name="pitv-carousel", daemon=True
+            )
+            _CAROUSEL_THREAD.start()
+
+
+def _carousel_worker():
+    """Animate only the carousel band; never ask the main renderer for a full frame."""
+    while not _CAROUSEL_STOP.is_set():
+        now = time.monotonic()
+        with _CAROUSEL_LOCK:
+            items = list(_CAROUSEL["items"])
+            view = _CAROUSEL["view"]
+            target = _CAROUSEL["target"]
+            enabled = bool(_CAROUSEL["autoplay"])
+            next_auto = float(_CAROUSEL["next_auto"])
+            pause_until = float(_CAROUSEL["pause_until"])
+            failed = bool(_CAROUSEL["error"])
+            if view == "MENU" and len(items) > 1 and not failed and target is None:
+                due = max(next_auto, pause_until)
+                if enabled and now >= due:
+                    target = round(float(_CAROUSEL["position"])) + 1
+                    _CAROUSEL["target"] = target
+                    _CAROUSEL["generation"] += 1
+                    _CAROUSEL["next_auto"] = now + float(_CAROUSEL["interval"])
+            generation = int(_CAROUSEL["generation"])
+            start = float(_CAROUSEL["position"])
+            target = _CAROUSEL["target"]
+            interval = float(_CAROUSEL["interval"])
+        if view != "MENU" or len(items) < 2 or failed or target is None:
+            wait_for = 0.25
+            with _CAROUSEL_LOCK:
+                if enabled and view == "MENU" and not failed:
+                    wait_for = min(wait_for, max(0.03, max(next_auto, pause_until)-time.monotonic()))
+            _CAROUSEL_WAKE.wait(wait_for)
+            _CAROUSEL_WAKE.clear()
+            continue
+
+        destination = float(target)
+        duration = 0.38
+        steps = 10
+        interrupted = False
+        for step in range(1, steps+1):
+            fraction = step / steps
+            eased = fraction * fraction * (3.0 - 2.0 * fraction)
+            with _CAROUSEL_LOCK:
+                if (_CAROUSEL["generation"] != generation
+                        or _CAROUSEL["view"] != "MENU"
+                        or not _CAROUSEL["items"]):
+                    interrupted = True
+                    break
+                position = start + (destination-start) * eased
+                strip = _draw_carousel_strip(list(_CAROUSEL["items"]), position)
+                try:
+                    pitv_framebuffer.display_image_region(
+                        strip, (0, 70, WIDTH, 365), source_size=(WIDTH, HEIGHT)
+                    )
+                except Exception as exc:
+                    _CAROUSEL["error"] = True
+                    _CAROUSEL["target"] = None
+                    _CAROUSEL["generation"] += 1
+                    interrupted = True
+                    # Don't flood the log or retry the same failing write forever.
+                    try:
+                        print(f"PiTV carousel animation disabled after framebuffer error: {exc}")
+                    except Exception:
+                        pass
+                    break
+                _CAROUSEL["position"] = position
+            time.sleep(duration / steps)
+
+        with _CAROUSEL_LOCK:
+            if interrupted:
+                continue
+            if _CAROUSEL["generation"] == generation and _CAROUSEL["view"] == "MENU":
+                _CAROUSEL["position"] = destination
+                _CAROUSEL["target"] = None
+                _CAROUSEL["next_auto"] = time.monotonic() + interval
+                _CAROUSEL_WAKE.clear()
+
+
 def _draw_home(canvas, state):
     d = ImageDraw.Draw(canvas)
-    items = state["home_items"]
-    selected = max(0, min(int(state.get("selected_art", 0)), len(items)-1))
-    label, key, description = items[selected]
+    items = state.get("home_items", [])
+    selected = max(0, min(int(state.get("selected_art", 0)), max(0, len(items)-1)))
+    focus = str(state.get("home_focus", "carousel"))
+    nav_selected = int(state.get("nav_selected", 0))
+    carousel_items = state.get("carousel_games", [])
+    carousel_position = float(state.get("carousel_index", 0) or 0)
+    strip = _draw_carousel_strip(carousel_items, carousel_position)
+    canvas.paste(strip, (0, 70))
 
-    hero_box = (48, 105, 1232, 352)
-    hero = _shaded_artwork(
-        key, hero_box[2]-hero_box[0], hero_box[3]-hero_box[1], 840, 360, 185
-    )
-    mask = Image.new("L", hero.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0,0,hero.width-1,hero.height-1),radius=22,fill=255)
-    canvas.paste(hero, hero_box[:2], mask)
-    d = ImageDraw.Draw(canvas)
-    _label(d, (78, 226), label, 38, WHITE, True)
-    _pill(d, (80, 304, 225, 335), "SELECT TO OPEN", (29, 98, 166), WHITE, 12)
-    # A slight blue outline makes it clear this is the featured, focused item.
-    d.rounded_rectangle(hero_box, radius=22, outline=(62, 164, 255), width=2)
-
-    tile_w, tile_h, tile_gap = 216, 128, 18
+    _label(d, (54, 370), "QUICK ACCESS", 12, MUTED, True)
+    tile_w, tile_h, tile_gap = 216, 83, 18
     total = len(items)*tile_w+(len(items)-1)*tile_gap
     x0 = (WIDTH-total)//2
     for idx, (title, art_key, _desc) in enumerate(items):
         x = x0 + idx*(tile_w+tile_gap)
-        y = 408
-        selected_tile = idx == selected
-        if selected_tile:
-            d.rounded_rectangle((x-4,y-4,x+tile_w+4,y+tile_h+40),radius=18,fill=(26,72,125))
-        _cover(canvas, (x,y,x+tile_w,y+tile_h), art_key, 13, (500,250))
+        y = 392
+        chosen = idx == selected and focus == "shortcuts"
+        d.rounded_rectangle((x, y, x+tile_w, y+tile_h+33), radius=15,
+                            fill=(20, 63, 109) if chosen else PANEL,
+                            outline=CYAN if chosen else (37, 58, 89),
+                            width=3 if chosen else 1)
+        _cover(canvas, (x+5, y+5, x+tile_w-5, y+tile_h), art_key, 10, (500, 250))
         d = ImageDraw.Draw(canvas)
-        _label(d, (x+tile_w//2, y+tile_h+13), title, 16,
-               WHITE if selected_tile else (191,207,231), selected_tile, anchor="mm")
+        _label(d, (x+tile_w//2, y+tile_h+18), title, 14,
+               WHITE if chosen else (194, 210, 233), chosen, anchor="mm")
+
     d = ImageDraw.Draw(canvas)
-    _label(d, (1224, 636), "SELECT  OPEN     BACK  HOME", 14, MUTED, True, anchor="ra")
+    _label(d, (54, 524), "RECENTLY PLAYED", 12, MUTED, True)
+    recent = state.get("recent_games", [])
+    recent_selected = max(0, min(int(state.get("selected_recent", 0)), max(0, len(recent)-1)))
+    if not recent:
+        _label(d, (640, 581), "Games you launch will appear here.", 16,
+               (128, 150, 183), anchor="mm")
+    else:
+        card_w, card_h, gap = 184, 77, 13
+        total = len(recent)*card_w + max(0, len(recent)-1)*gap
+        x0 = (WIDTH-total)//2
+        for idx, (title, key, _desc) in enumerate(recent[:6]):
+            x = x0 + idx*(card_w+gap)
+            y = 542
+            chosen = idx == recent_selected and focus == "recent"
+            d.rounded_rectangle((x, y, x+card_w, y+card_h+31), radius=12,
+                                fill=(20, 63, 109) if chosen else PANEL,
+                                outline=CYAN if chosen else (37, 58, 89),
+                                width=3 if chosen else 1)
+            _cover(canvas, (x+4, y+4, x+card_w-4, y+card_h), key, 8, (500, 250))
+            d = ImageDraw.Draw(canvas)
+            _label(d, (x+card_w//2, y+card_h+17), title, 12,
+                   WHITE if chosen else (194, 210, 233), chosen, anchor="mm")
+
+    d = ImageDraw.Draw(canvas)
+    hints = {
+        "carousel": "LEFT / RIGHT  BROWSE GAMES     SELECT  PLAY     UP  NAVIGATION     DOWN  SHORTCUTS",
+        "shortcuts": "LEFT / RIGHT  CHOOSE     SELECT  OPEN     UP  GAMES     DOWN  RECENTLY PLAYED",
+        "recent": "LEFT / RIGHT  CHOOSE     SELECT  PLAY AGAIN     UP  SHORTCUTS",
+        "nav": "LEFT / RIGHT  NAVIGATE     SELECT  OPEN     DOWN  HOME CONTENT",
+    }
+    _label(d, (640, 692), hints.get(focus, hints["carousel"]), 12, MUTED, True, anchor="mm")
+    return canvas
+
+
+
+def _draw_settings(canvas, state):
+    d = ImageDraw.Draw(canvas)
+    _nav(canvas, "SETTINGS", state.get("clock_text", ""), False, 0)
+    page = str(state.get("settings_path_label", "Settings"))
+    _label(d, (54, 84), page.upper(), 22, WHITE, True)
+    description = str(state.get("settings_description", "Manage PiTV from the TV remote."))
+    _label(d, (54, 112), description[:100], 13, MUTED)
+    items = list(state.get("settings_items", []))
+    selected = max(0, min(int(state.get("settings_selected", 0)), max(0, len(items)-1)))
+    start = max(0, min(max(0, len(items)-6), selected-3))
+    if not items:
+        _label(d, (640, 350), "Nothing to show here.", 20, MUTED, anchor="mm")
+    else:
+        for visible_index, item_index in enumerate(range(start, min(len(items), start+6))):
+            item = items[item_index]
+            label = str(item[0])
+            status = str(item[1]) if len(item) > 1 else ""
+            detail = str(item[2]) if len(item) > 2 else ""
+            y = 148 + visible_index * 76
+            chosen = item_index == selected
+            d.rounded_rectangle((54, y, 1226, y+64), radius=14,
+                                fill=(22, 66, 115) if chosen else PANEL,
+                                outline=CYAN if chosen else (35, 55, 87),
+                                width=3 if chosen else 1)
+            _label(d, (78, y+17), label[:55], 17,
+                   WHITE if chosen else (212, 223, 241), chosen)
+            if detail:
+                _label(d, (79, y+42), detail[:90], 11, MUTED)
+            if status:
+                _label(d, (1197, y+30), status[:24], 13,
+                       CYAN if chosen else (168, 194, 223), True, anchor="ra")
+    message = str(state.get("settings_message", ""))
+    if message:
+        _label(d, (640, 635), message[:115], 13, GOLD, True, anchor="mm")
+    _label(d, (640, 687), "ARROWS  MOVE     SELECT  CONFIRM     BACK  PREVIOUS MENU",
+           12, MUTED, True, anchor="mm")
+
+
+def _draw_settings_auth(canvas, state):
+    d = ImageDraw.Draw(canvas)
+    _nav(canvas, "SETTINGS", state.get("clock_text", ""), False, 0)
+    _label(d, (640, 110), "ADMINISTRATOR AUTHORISATION", 23, WHITE, True, anchor="mm")
+    _label(d, (640, 148), "Enter the six-digit emergency code to continue.", 16, MUTED, anchor="mm")
+    entered = str(state.get("settings_auth_entered", ""))
+    _label(d, (640, 193), "  ".join("*" for _ in entered) + "  ".join("_" for _ in range(6-len(entered))),
+           31, CYAN, True, anchor="mm")
+    layout = [["1","2","3"],["4","5","6"],["7","8","9"],["DEL","0","OK"]]
+    selected_row = max(0, min(3, int(state.get("settings_key_row", 0))))
+    selected_col = max(0, min(2, int(state.get("settings_key_col", 0))))
+    card_w, card_h, gx, gy = 140, 62, 18, 10
+    x0 = (WIDTH - (3*card_w+2*gx))//2
+    for row, values in enumerate(layout):
+        for col, value in enumerate(values):
+            x = x0 + col*(card_w+gx)
+            y = 228 + row*(card_h+gy)
+            chosen = row == selected_row and col == selected_col
+            d.rounded_rectangle((x,y,x+card_w,y+card_h), radius=13,
+                                fill=(22, 83, 143) if chosen else PANEL,
+                                outline=CYAN if chosen else (39,63,99),
+                                width=3 if chosen else 1)
+            _label(d,(x+card_w//2,y+card_h//2),value,21,WHITE,True,anchor="mm")
+    error = str(state.get("settings_message", ""))
+    if error:
+        _label(d, (640, 545), error[:95], 14, (255, 144, 160), True, anchor="mm")
+    _label(d, (640, 665), "BACK  CANCEL", 13, MUTED, True, anchor="mm")
+
+
+def _draw_settings_input(canvas, state):
+    d = ImageDraw.Draw(canvas)
+    _nav(canvas, "SETTINGS", state.get("clock_text", ""), False, 0)
+    prompt = str(state.get("settings_input_prompt", "Enter text"))
+    mode = str(state.get("settings_input_mode", "text"))
+    _label(d, (640, 96), prompt.upper()[:72], 21, WHITE, True, anchor="mm")
+    value = str(state.get("settings_text", ""))
+    shown = "  ".join("*" for _ in value) if mode == "pin" else value
+    _label(d, (640, 139), shown[-36:] or "_", 22, CYAN, True, anchor="mm")
+    if mode in ("pin", "auth_pin"):
+        layout = [["1","2","3"],["4","5","6"],["7","8","9"],["DEL","0","OK"]]
+    else:
+        layout = [
+            list("ABCDEFG"),
+            list("HIJKLMN"),
+            list("OPQRSTU"),
+            list("VWXYZ _<"),
+            ["0","1","2","3","4","5","6"],
+            ["7","8","9","-",".","@","DONE"],
+        ]
+    row_sel = max(0, min(len(layout)-1, int(state.get("settings_key_row",0))))
+    col_sel = max(0, min(max(len(row) for row in layout)-1, int(state.get("settings_key_col",0))))
+    if mode in ("pin", "auth_pin"):
+        card_w, card_h, gap_x, gap_y = 140, 62, 18, 10
+        x0 = (WIDTH-(3*card_w+2*gap_x))//2
+        y0 = 205
+    else:
+        card_w, card_h, gap_x, gap_y = 148, 48, 10, 8
+        x0 = (WIDTH-(7*card_w+6*gap_x))//2
+        y0 = 190
+    for row, values in enumerate(layout):
+        for col, key in enumerate(values):
+            x = x0 + col*(card_w+gap_x)
+            y = y0 + row*(card_h+gap_y)
+            chosen = row == row_sel and col == col_sel
+            d.rounded_rectangle((x,y,x+card_w,y+card_h), radius=10,
+                                fill=(22, 83, 143) if chosen else PANEL,
+                                outline=CYAN if chosen else (39,63,99),
+                                width=3 if chosen else 1)
+            label = {"_":"SPACE","<":"DELETE","DONE":"DONE"}.get(key,key)
+            _label(d,(x+card_w//2,y+card_h//2),label,15,WHITE,True,anchor="mm")
+    _label(d, (640, 660), "ARROWS  MOVE     SELECT  ADD CHARACTER     BACK  CANCEL",
+           12, MUTED, True, anchor="mm")
+
+
+def _draw_settings_log(canvas, state):
+    d = ImageDraw.Draw(canvas)
+    _nav(canvas, "SETTINGS", state.get("clock_text", ""), False, 0)
+    _label(d, (54, 88), "RECENT PI TV LOGS", 22, WHITE, True)
+    lines = list(state.get("settings_log_lines", []))
+    scroll = max(0, min(int(state.get("settings_log_scroll",0)), max(0,len(lines)-18)))
+    visible = lines[scroll:scroll+18]
+    for idx, line in enumerate(visible):
+        y = 126 + idx*28
+        _label(d, (54, y), str(line)[:150], 12,
+               (255, 193, 124) if "error" in str(line).lower() or "fail" in str(line).lower() else (190, 207, 230))
+    _label(d, (640, 686), "UP / DOWN  SCROLL     LEFT  CLEAR WITH CONFIRMATION     BACK  SETTINGS",
+           12, MUTED, True, anchor="mm")
+
 
 
 def _draw_games(canvas, state):
@@ -1117,15 +1533,44 @@ def _draw_overlay(canvas, overlay):
     return canvas.convert("RGB")
 
 
+def _draw_clock_region(clock_text):
+    # Redraw only the clock's small header rectangle using the same background.
+    left, top, right, bottom = 1064, 0, 1240, 63
+    background = _background().crop((left, top, right, bottom)).convert("RGB")
+    d = ImageDraw.Draw(background)
+    _label(d, (right-left-10, 29), clock_text, 15, MUTED, anchor="ra")
+    pitv_framebuffer.display_image_region(
+        background, (left, top, right, bottom), source_size=(WIDTH, HEIGHT)
+    )
+
+
 def render(state, log_fn=None):
-    """Render only when visible state changes; return True if a frame was drawn."""
-    global _LAST_SIGNATURE, _LAST_PREPARED
+    """Render only changed screens; the home carousel animates in its own region worker."""
+    global _LAST_SIGNATURE, _LAST_PREPARED, _LAST_CLOCK_TEXT
     total_started = time.monotonic()
     now = _display_clock_text()
     state = dict(state)
     state["clock_text"] = now
-    signature = json.dumps(state, sort_keys=True, ensure_ascii=True, default=str)
+    _sync_carousel_runtime(state)
+
+    # Clock text and carousel position change independently and must not trigger
+    # a complete screen render. Their respective workers update small regions.
+    signature_state = dict(state)
+    signature_state.pop("clock_text", None)
+    signature_state.pop("carousel_index", None)
+    signature = json.dumps(signature_state, sort_keys=True, ensure_ascii=True, default=str)
     if signature == _LAST_SIGNATURE:
+        if now != _LAST_CLOCK_TEXT and str(state.get("view")) in _NAV_CLOCK_VIEWS:
+            try:
+                with _CAROUSEL_LOCK:
+                    _draw_clock_region(now)
+            except Exception as exc:
+                if log_fn is not None:
+                    try:
+                        log_fn(f"V2 clock region update failed: {type(exc).__name__}: {exc}")
+                    except Exception:
+                        pass
+            _LAST_CLOCK_TEXT = now
         return False
 
     draw_started = time.monotonic()
@@ -1134,7 +1579,7 @@ def render(state, log_fn=None):
     if state.get("hard_locked") or view == "LOCKED":
         _draw_lock(canvas, state)
     elif view == "MENU":
-        _nav(canvas, "HOME", now)
+        _nav(canvas, "HOME", now, state.get("home_focus") == "nav", state.get("nav_selected", 0))
         _draw_home(canvas, state)
     elif view == "DURATION_SELECT":
         _nav(canvas, "SCREENS", now)
@@ -1151,6 +1596,18 @@ def render(state, log_fn=None):
     elif view == "KEYPAD":
         _nav(canvas, "GAMES", now)
         _draw_keypad(canvas, state)
+    elif view == "SETTINGS":
+        _draw_settings(canvas, state)
+    elif view == "SETTINGS_AUTH":
+        _draw_settings_auth(canvas, state)
+    elif view == "SETTINGS_INPUT":
+        _draw_settings_input(canvas, state)
+    elif view == "SETTINGS_STATUS":
+        _draw_settings(canvas, state)
+    elif view == "SETTINGS_CONFIRM":
+        _draw_settings(canvas, state)
+    elif view == "SETTINGS_LOG":
+        _draw_settings_log(canvas, state)
     elif view == "MUSIC":
         _draw_music(canvas, state)
     elif view == "IMPOSTER_WORD":
@@ -1179,8 +1636,6 @@ def render(state, log_fn=None):
     canvas = _native_resolution(canvas)
     scale_elapsed = time.monotonic() - scale_started
 
-    # Avoid PNG encode -> disk write -> PNG decode on every menu transition.
-    # Set PITV_SAVE_PNG=1 only when a diagnostic copy is wanted.
     prepare_started = time.monotonic()
     if os.environ.get("PITV_SAVE_PNG", "").strip() == "1":
         os.makedirs(os.path.dirname(PNG_PATH), mode=0o700, exist_ok=True)
@@ -1189,11 +1644,15 @@ def render(state, log_fn=None):
     prepare_elapsed = time.monotonic() - prepare_started
 
     display_started = time.monotonic()
-    pitv_framebuffer.display_prepared_frame(prepared)
+    # Lock order matches the carousel worker (carousel lock, then framebuffer
+    # lock). A stale animation frame cannot land over a newly rendered screen.
+    with _CAROUSEL_LOCK:
+        pitv_framebuffer.display_prepared_frame(prepared)
     display_elapsed = time.monotonic() - display_started
 
     _LAST_PREPARED = prepared
     _LAST_SIGNATURE = signature
+    _LAST_CLOCK_TEXT = now
     total_elapsed = time.monotonic() - total_started
     if log_fn is not None:
         try:
@@ -1216,8 +1675,15 @@ def render(state, log_fn=None):
     return True
 
 
+
+
 def reset_cache():
     """Force the next render, useful after switching display modes."""
-    global _LAST_SIGNATURE, _LAST_PREPARED
+    global _LAST_SIGNATURE, _LAST_PREPARED, _LAST_CLOCK_TEXT
     _LAST_SIGNATURE = None
     _LAST_PREPARED = None
+    _LAST_CLOCK_TEXT = None
+    with _CAROUSEL_LOCK:
+        _CAROUSEL["target"] = None
+        _CAROUSEL["generation"] += 1
+        _CAROUSEL_WAKE.set()
