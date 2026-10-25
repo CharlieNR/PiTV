@@ -110,6 +110,25 @@ if ! python3 -c 'import pitv_framebuffer; import pitv_tvui; import pitv_artwork;
     exit 1
 fi
 
+# The on-TV Controllers page uses BlueZ's standard bluetoothctl CLI and
+# PiTV's existing evdev listener. Install Debian/Raspberry Pi OS packages only;
+# do not alter the system Python environment with pip.
+NEED_BT_PACKAGES=0
+command -v bluetoothctl >/dev/null 2>&1 || NEED_BT_PACKAGES=1
+python3 -c 'import evdev' >/dev/null 2>&1 || NEED_BT_PACKAGES=1
+if [ "$NEED_BT_PACKAGES" -eq 1 ]; then
+    echo "Installing Bluetooth and controller input dependencies (bluez, python3-evdev)..."
+    sudo apt-get update -qq
+    sudo apt-get install -y bluez python3-evdev
+fi
+if ! command -v bluetoothctl >/dev/null 2>&1; then
+    echo "ERROR: bluetoothctl is still unavailable after installing bluez."
+    exit 1
+fi
+if ! python3 -c 'import evdev' >/dev/null 2>&1; then
+    echo "WARNING: python3-evdev is unavailable; Bluetooth pairing may work, but controller events will not be read."
+fi
+
 # Fire art uses cacafire from Debian's caca-utils package.
 # Install it on first deployment so the Fire option cannot silently exit to the menu.
 if ! command -v cacafire >/dev/null 2>&1; then
@@ -218,6 +237,29 @@ HB_USER="$(sed -n 's/^User=//p' /etc/systemd/system/homebridge.service \
 
 sudo mkdir -p /etc/pitv
 getent group pitv >/dev/null || sudo groupadd pitv
+
+# Install a fixed-action maintenance helper. The TV UI can request only
+# approved updates, a PiTV menu restart, or a device reboot; it cannot pass
+# arbitrary shell commands through sudo. The helper and deployment runner are
+# installed root-owned outside the user-writable checkout.
+if [ ! -f pitv-maintenance.py ]; then
+    echo "ERROR: pitv-maintenance.py is missing from the checkout."
+    exit 1
+fi
+sudo install -D -o root -g root -m 0755 pitv-maintenance.py /usr/local/sbin/pitv-maintenance
+sudo install -D -o root -g root -m 0755 deploy.sh /usr/local/lib/pitv/deploy-runner.sh
+MAINT_CONFIG="$(/usr/bin/python3 -c 'import json,sys; print(json.dumps({"user":sys.argv[1],"home":sys.argv[2],"repo":sys.argv[2]+"/PiTV"}))' "$PITV_USER" "$PITV_HOME")"
+printf '%s\n' "$MAINT_CONFIG" | sudo tee /etc/pitv/maintenance.json >/dev/null
+sudo chown root:root /etc/pitv/maintenance.json
+sudo chmod 644 /etc/pitv/maintenance.json
+printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/pitv-maintenance *\n' "$PITV_USER" \
+    | sudo tee /etc/sudoers.d/pitv-maintenance >/dev/null
+sudo chown root:root /etc/sudoers.d/pitv-maintenance
+sudo chmod 440 /etc/sudoers.d/pitv-maintenance
+if ! sudo visudo -cf /etc/sudoers.d/pitv-maintenance >/dev/null; then
+    echo "ERROR: restricted PiTV maintenance sudoers rule failed validation."
+    exit 1
+fi
 # Preserve access to the old group-readable key for the one-time migration.
 sudo usermod -aG pitv "$PITV_USER" 2>/dev/null || true
 
@@ -315,11 +357,16 @@ if ! sudo -u "$PITV_USER" -H /usr/bin/env PITV_STATE_FILE="$STATE_FILE" \
     echo
 fi
 
-# Keep the original interactive reboot choice for both manual deploys and updates.
-read -p "Do you want to reboot the Raspberry Pi now? [Y/n]: " answer
-if [ "$answer" = "Y" ]; then
-    echo "Rebooting Pi..."
-    sudo reboot
+# Keep the original interactive reboot choice for manual deployments, but
+# never try to display a prompt when the trusted maintenance runner is detached.
+if [ "${PITV_SKIP_REBOOT_PROMPT:-0}" = "1" ]; then
+    echo "Reboot prompt skipped (detached maintenance update)."
 else
-    echo "Reboot skipped."
+    read -p "Do you want to reboot the Raspberry Pi now? [Y/n]: " answer
+    if [ "$answer" = "Y" ]; then
+        echo "Rebooting Pi..."
+        sudo reboot
+    else
+        echo "Reboot skipped."
+    fi
 fi
