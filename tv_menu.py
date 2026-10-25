@@ -4492,11 +4492,12 @@ def _settings_set_guest_mode(enabled):
 
 
 def _settings_begin_text_input(prompt, mode, context):
-    global current_view, settings_input_prompt, settings_input_mode
+    global current_view, settings_input_prompt, settings_input_mode, settings_input_lowercase
     global settings_input_context, settings_input_return_page, settings_text
     global settings_key_row, settings_key_col
     settings_input_prompt = str(prompt)
     settings_input_mode = str(mode)
+    settings_input_lowercase = False
     settings_input_context = str(context)
     settings_input_return_page = settings_page
     settings_text = ""
