@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import threading
 import time
+import traceback
 
 import pitv_secrets
 import pitv_state
@@ -4487,7 +4488,13 @@ def main(stdscr):
                 pitv_tvui.render(_graphic_state, log_fn=log)
             except Exception as _graphic_render_exc:
                 _GRAPHIC_UI_FAILED = True
-                log(f"Graphical interface failed; switching to text fallback: {_graphic_render_exc}")
+                log(f"Graphical interface failed; switching to text fallback: {_graphic_render_exc!r}")
+                for _trace_line in traceback.format_exception(
+                    type(_graphic_render_exc), _graphic_render_exc,
+                    _graphic_render_exc.__traceback__
+                ):
+                    for _trace_part in _trace_line.rstrip().splitlines():
+                        log(f"V2 traceback: {_trace_part}")
                 try:
                     pitv_framebuffer.clear_framebuffer()
                 except Exception:

@@ -26,70 +26,6 @@ def _component(value: int, offset: int, length: int, msb_right: int, label: str)
         raise RuntimeError(f"Unsupported framebuffer {label} bitfield (msb_right={msb_right}).")
     return ((value * ((1 << length) - 1) + 127) // 255) << offset
 
-
-def _pack_with_numpy(canvas: Image.Image, info: dict[str, Any]):
-    """Vectorised fallback for uncommon 16/24/32-bit framebuffer layouts."""
-    bits = int(info["bits_per_pixel"])
-    if bits not in (16, 24, 32):
-        return None
-    try:
-        import numpy as np
-    except ImportError:
-        return None
-
-    try:
-        pixels = np.asarray(canvas, dtype=np.uint8)
-        height, width = pixels.shape[:2]
-        packed = np.zeros((height, width), dtype=np.uint32)
-        for channel_index, field in enumerate((info["red"], info["green"], info["blue"])):
-            offset, length, msb_right = field
-            if msb_right:
-                return None
-            if length <= 0:
-                continue
-            maximum = (1 << length) - 1
-            component = (
-                pixels[:, :, channel_index].astype(np.uint32) * maximum + 127
-            ) // 255
-            packed |= component << offset
-
-        trans_offset, trans_length, trans_msb_right = info["transparency"]
-        if trans_msb_right:
-            return None
-        if trans_length > 0:
-            packed |= ((1 << trans_length) - 1) << trans_offset
-
-        if bits == 16:
-            raw = packed.astype(np.uint16, copy=False).tobytes()
-        elif bits == 32:
-            raw = packed.astype(np.uint32, copy=False).tobytes()
-        else:
-            byte_view = packed.astype(np.uint32, copy=False).view(np.uint8).reshape(
-                height, width, 4
-            )
-            # Remove the unused byte from each 24-bit pixel in native byte order.
-            byte_view = byte_view[:, :, :3] if sys.byteorder == "little" else byte_view[:, :, 1:4]
-            raw = np.ascontiguousarray(byte_view).tobytes()
-
-        bytes_per_pixel = int(info["bytes_per_pixel"])
-        row_bytes = width * bytes_per_pixel
-        if len(raw) != row_bytes * height:
-            return None
-        line_length = int(info["line_length"])
-        pixel_start = int(info["xoffset"]) * bytes_per_pixel
-        frame = bytearray(line_length * height)
-        if pixel_start == 0 and line_length == row_bytes:
-            frame[:] = raw
-        else:
-            for y in range(height):
-                src = y * row_bytes
-                dst = y * line_length + pixel_start
-                frame[dst:dst + row_bytes] = raw[src:src + row_bytes]
-        return bytes(frame)
-    except (AttributeError, OverflowError, TypeError, ValueError):
-        return None
-
-
 def _pack_with_pillow_math(canvas: Image.Image, info: dict[str, Any]):
     """Pack uncommon 16/32-bit framebuffer layouts in Pillow's native pixel engine."""
     bits = int(info["bits_per_pixel"])
@@ -129,9 +65,7 @@ def _pack_with_pillow_math(canvas: Image.Image, info: dict[str, Any]):
                 if length <= 0:
                     return "0"
                 maximum = (1 << length) - 1
-                # Convert back to an integer image before bit shifting; older
-                # Pillow ImageMath versions may otherwise fall back to Python loops.
-                return "((int((" + name + " * " + str(maximum) + " + 127) / 255)) << " + str(offset) + ")"
+                return "(((" + name + " * " + str(maximum) + " + 127) / 255) << " + str(offset) + ")"
             terms = [term("R", red), term("G", green), term("B", blue)]
             if alpha:
                 terms.append(str(alpha))
@@ -272,8 +206,9 @@ def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any
     xoffset = info["xoffset"]
     transparency = info["transparency"]
 
-    # Native Pillow raw encoders are much faster than converting every pixel
-    # in Python. Handle both common byte orders for 24-bit RGB and 32-bit RGBA.
+    # Fast paths for the usual little-endian RGB888 / XRGB8888 framebuffer
+    # layouts. Pillow performs channel packing in native code; the generic
+    # fallback below is intentionally retained for unusual bitfield layouts.
     standard_bgr = (
         sys.byteorder == "little"
         and red == (16, 8, 0)
@@ -281,37 +216,15 @@ def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any
         and blue == (0, 8, 0)
         and xoffset == 0
     )
-    standard_rgb = (
-        sys.byteorder == "little"
-        and red == (0, 8, 0)
-        and green == (8, 8, 0)
-        and blue == (16, 8, 0)
-        and xoffset == 0
-    )
     packed = None
-    packing_method = None
     if standard_bgr and bytes_per_pixel == 3 and transparency[1] == 0:
         packed = canvas.tobytes("raw", "BGR")
-        packing_method = "pillow-raw-bgr24"
     elif (standard_bgr and bytes_per_pixel == 4
           and transparency == (24, 8, 0)):
         packed = canvas.convert("RGBA").tobytes("raw", "BGRA")
-        packing_method = "pillow-raw-bgra32"
     elif (standard_bgr and bytes_per_pixel == 4
           and transparency[1] == 0):
         packed = canvas.tobytes("raw", "BGRX")
-        packing_method = "pillow-raw-bgrx32"
-    elif standard_rgb and bytes_per_pixel == 3 and transparency[1] == 0:
-        packed = canvas.tobytes("raw", "RGB")
-        packing_method = "pillow-raw-rgb24"
-    elif (standard_rgb and bytes_per_pixel == 4
-          and transparency == (24, 8, 0)):
-        packed = canvas.convert("RGBA").tobytes("raw", "RGBA")
-        packing_method = "pillow-raw-rgba32"
-    elif (standard_rgb and bytes_per_pixel == 4
-          and transparency[1] == 0):
-        packed = canvas.tobytes("raw", "RGBX")
-        packing_method = "pillow-raw-rgbx32"
 
     if packed is not None:
         row_bytes = width * bytes_per_pixel
@@ -328,19 +241,7 @@ def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any
             "info": info,
             "source_width": source_width,
             "source_height": source_height,
-            "packing_method": packing_method,
-        }
-
-    # If the format is unusual, NumPy can pack the entire image in compiled
-    # array operations. It is optional; no extra PiTV dependency is required.
-    packed_frame = _pack_with_numpy(canvas, info)
-    if packed_frame is not None:
-        return {
-            "frame": packed_frame,
-            "info": info,
-            "source_width": source_width,
-            "source_height": source_height,
-            "packing_method": "numpy-vectorized",
+            "packing_method": "pillow-raw",
         }
 
     packed_frame = _pack_with_pillow_math(canvas, info)
