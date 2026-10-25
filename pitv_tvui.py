@@ -750,6 +750,7 @@ def _sync_carousel_runtime(state):
         _CAROUSEL["view"] = view
         _CAROUSEL["autoplay"] = enabled
         _CAROUSEL["interval"] = interval
+        runtime_changed = changed_items or changed_view or changed_settings
         if changed_items:
             _CAROUSEL["items"] = items
             requested = max(0, int(state.get("carousel_index", 0) or 0))
@@ -768,7 +769,8 @@ def _sync_carousel_runtime(state):
             _CAROUSEL["generation"] += 1
         if changed_settings:
             _CAROUSEL["next_auto"] = time.monotonic() + interval
-        _CAROUSEL_WAKE.set()
+        if runtime_changed:
+            _CAROUSEL_WAKE.set()
         if _CAROUSEL_THREAD is None or not _CAROUSEL_THREAD.is_alive():
             _CAROUSEL_STOP.clear()
             _CAROUSEL_THREAD = threading.Thread(
@@ -960,8 +962,8 @@ def _draw_settings_auth(canvas, state):
     _label(d, (640, 110), "ADMINISTRATOR AUTHORISATION", 23, WHITE, True, anchor="mm")
     _label(d, (640, 148), "Enter the six-digit emergency code to continue.", 16, MUTED, anchor="mm")
     entered = str(state.get("settings_auth_entered", ""))
-    _label(d, (640, 193), "  ".join("*" for _ in entered) + "  ".join("_" for _ in range(6-len(entered))),
-           31, CYAN, True, anchor="mm")
+    masked = "  ".join(["*"] * min(6, len(entered)) + ["_"] * max(0, 6-len(entered)))
+    _label(d, (640, 193), masked, 31, CYAN, True, anchor="mm")
     layout = [["1","2","3"],["4","5","6"],["7","8","9"],["DEL","0","OK"]]
     selected_row = max(0, min(3, int(state.get("settings_key_row", 0))))
     selected_col = max(0, min(2, int(state.get("settings_key_col", 0))))
@@ -999,7 +1001,7 @@ def _draw_settings_input(canvas, state):
             list("ABCDEFG"),
             list("HIJKLMN"),
             list("OPQRSTU"),
-            list("VWXYZ _<"),
+            ["V", "W", "X", "Y", "Z", "_", "<"],
             ["0","1","2","3","4","5","6"],
             ["7","8","9","-",".","@","DONE"],
         ]
