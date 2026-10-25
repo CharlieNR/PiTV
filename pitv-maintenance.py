@@ -169,6 +169,11 @@ def _backup_state(config: dict, branch: str) -> str:
 def _update_worker(branch: str) -> int:
     if os.geteuid() != 0:
         raise RuntimeError("The update worker must run as root inside its transient systemd unit.")
+    # systemd sets INVOCATION_ID for transient services. This prevents someone
+    # from using the sudoers entry to invoke the long-running worker directly
+    # inside the menu service's own process group.
+    if not re.fullmatch(r"[0-9a-f]{32}", os.environ.get("INVOCATION_ID", "")):
+        raise RuntimeError("Update workers may only run as detached systemd tasks.")
     if branch not in ALLOWED_BRANCHES:
         raise RuntimeError("Only experimental and main branches are permitted.")
     config = _read_config()
