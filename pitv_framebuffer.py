@@ -8,6 +8,7 @@ import os
 import struct
 import sys
 from typing import Any
+from functools import lru_cache
 
 from PIL import Image, ImageMath
 
@@ -30,9 +31,10 @@ try:
     ]
     _RGB565_PACKER.restype = None
     try:
-        _RGB565_SCALE_PACKER = _rgb565_library.pitv_scale_pack_rgb565
+        _RGB565_SCALE_PACKER = _rgb565_library.pitv_scale_pack_rgb565_mapped
         _RGB565_SCALE_PACKER.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32),
             ctypes.c_uint32, ctypes.c_uint32,
             ctypes.c_uint32, ctypes.c_uint32,
             ctypes.c_uint32, ctypes.c_uint32,
@@ -88,6 +90,21 @@ def _pack_rgb565_native(
     }
 
 
+@lru_cache(maxsize=32)
+def _native_nearest_index_map(source_length: int, target_length: int):
+    """Cache Pillow's exact NEAREST source indices for one resized axis."""
+    source_length = max(1, int(source_length))
+    target_length = max(1, int(target_length))
+    if source_length == target_length:
+        return (ctypes.c_uint32 * target_length)(*range(target_length))
+
+    index_image = Image.new("I", (source_length, 1))
+    index_image.putdata(list(range(source_length)))
+    resized = index_image.resize((target_length, 1), Image.Resampling.NEAREST)
+    indices = [int(value) for value in resized.getdata()]
+    return (ctypes.c_uint32 * target_length)(*indices)
+
+
 def _pack_rgb565_scaled_native(
     image: Image.Image, info: dict[str, Any],
     source_width: int, source_height: int, target_size: tuple[int, int],
@@ -112,11 +129,15 @@ def _pack_rgb565_scaled_native(
     line_length = int(info["line_length"])
     xoffset_bytes = int(info["xoffset"]) * 2
 
+    # Pillow generates these small maps once per source/target dimension pair.
+    # Reusing them keeps the packed output pixel-identical to the old resize.
+    xmap = _native_nearest_index_map(source_width, content_width)
+    ymap = _native_nearest_index_map(source_height, content_height)
     rgb = image.tobytes()
     frame = bytearray(line_length * height)
     output_view = (ctypes.c_uint8 * len(frame)).from_buffer(frame)
     ok = _RGB565_SCALE_PACKER(
-        ctypes.c_char_p(rgb), output_view,
+        ctypes.c_char_p(rgb), output_view, xmap, ymap,
         source_width, source_height, width, height,
         content_width, content_height, offset_x, offset_y,
         line_length, xoffset_bytes,
