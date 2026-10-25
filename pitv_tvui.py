@@ -1694,22 +1694,25 @@ def render(state, log_fn=None):
     with _CAROUSEL_LOCK:
         pitv_framebuffer.display_prepared_frame(prepared)
         if view == "MENU" and _CAROUSEL["view"] == "MENU" and _CAROUSEL["items"]:
-            # A full-screen redraw may have been prepared while a carousel
-            # slide was moving. Repair that region from the current position
-            # immediately after the full frame, avoiding a stale final slide.
-            try:
-                current_strip = _draw_carousel_strip(
-                    list(_CAROUSEL["items"]), float(_CAROUSEL["position"])
-                )
-                pitv_framebuffer.display_image_region(
-                    current_strip, (0, 70, WIDTH, 365), source_size=(WIDTH, HEIGHT)
-                )
-            except Exception as exc:
-                if log_fn is not None:
-                    try:
-                        log_fn(f"V2 carousel region restore failed: {type(exc).__name__}: {exc}")
-                    except Exception:
-                        pass
+            current_position = float(_CAROUSEL["position"])
+            rendered_position = float(state.get("carousel_index", 0) or 0)
+            # Only repair the band if the slide moved while the full frame was
+            # being composed. An ordinary home refresh should remain one
+            # framebuffer write, not redraw an already-correct carousel twice.
+            if abs(current_position - rendered_position) >= 0.01:
+                try:
+                    current_strip = _draw_carousel_strip(
+                        list(_CAROUSEL["items"]), current_position
+                    )
+                    pitv_framebuffer.display_image_region(
+                        current_strip, (0, 70, WIDTH, 365), source_size=(WIDTH, HEIGHT)
+                    )
+                except Exception as exc:
+                    if log_fn is not None:
+                        try:
+                            log_fn(f"V2 carousel region restore failed: {type(exc).__name__}: {exc}")
+                        except Exception:
+                            pass
     display_elapsed = time.monotonic() - display_started
 
     _LAST_PREPARED = prepared
