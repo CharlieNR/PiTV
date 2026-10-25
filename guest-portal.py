@@ -856,11 +856,20 @@ def imposter_join_body(game_id):
  var authBox=document.getElementById('imposterAuth'),playBox=document.getElementById('imposterPlay');
  var content=document.getElementById('imposterContent'),heading=document.getElementById('imposterHeading');
  var sub=document.getElementById('imposterSubheading'),authError=document.getElementById('imposterAuthError');
- var lastRenderKey='',voteMessage='',wordSubmitting=false,turnSubmitting=false,polling=false,stateRevision=0;
+ var lastRenderKey='',voteMessage='',categorySubmitting=false,wordSubmitting=false,turnSubmitting=false,polling=false,stateRevision=0;
  function el(tag,text,cls){var n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;}
  function api(path,fields){return fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
   body:new URLSearchParams(Object.assign({game_id:gameId,token:token},fields||{}))});}
  function showAuth(msg){authBox.hidden=false;playBox.hidden=true;authError.textContent=msg||'';}
+ function appendSecretClue(s,role){
+  if(role==='imposter'){
+   content.appendChild(el('p','YOUR CATEGORY','muted'));
+   content.appendChild(el('div',s.category||'Waiting for category…','imposter-word'));
+  }else{
+   content.appendChild(el('p','YOUR WORD','muted'));
+   content.appendChild(el('div',s.word||'Waiting for word…','imposter-word'));
+  }
+ }
  function authenticate(e){
   e.preventDefault();var pin=document.getElementById('imposterPin').value;
   if(!/^[0-9]{6}$/.test(pin)){showAuth('Enter all six digits.');return;}
@@ -881,7 +890,7 @@ def imposter_join_body(game_id):
   authBox.hidden=true;playBox.hidden=false;
   var phase=s.phase||'ended',role=s.role||'';
   heading.textContent='Imposter · Clue round '+(s.round_number||1);
-  var signature=phase+'|'+role+'|'+(s.round_number||1)+'|'+(s.current_turn||'');
+  var signature=phase+'|'+role+'|'+(s.round_number||1)+'|'+(s.current_turn||'')+'|'+(s.category||'')+'|'+(s.word||'');
   if(signature!==lastRenderKey){
    lastRenderKey=signature;content.replaceChildren();sub.textContent='';
    if(phase==='join'){
@@ -890,56 +899,102 @@ def imposter_join_body(game_id):
     p.id='imposterJoinProgress';content.appendChild(p);
     var list=el('div',null,'imposter-list');
     s.players.forEach(function(n){list.appendChild(el('div',n,'imposter-note'));});content.appendChild(list);
+   }else if(phase==='choose_category'){
+    if(role==='imposter'){
+     content.appendChild(el('div','YOU ARE THE IMPOSTER','imposter-role bad'));
+     content.appendChild(el('p','The category is being chosen. You will see the category, but not the secret word.','imposter-note'));
+    }else if(role==='chooser'){
+     content.appendChild(el('div','YOU PICK THE CATEGORY','imposter-role pick'));
+     content.appendChild(el('p','Choose a category first. Then pick one secret word from that category. Everyone except the imposter will receive the word.','imposter-note'));
+     var categoryList=el('div',null,'imposter-list');
+     var categoryStatus=el('p','','muted');categoryStatus.id='imposterCategoryStatus';categoryStatus.setAttribute('aria-live','polite');
+     (s.categories||[]).forEach(function(category){
+      var b=el('button',category);b.type='button';b.dataset.category=category;
+      b.addEventListener('click',function(){
+       if(categorySubmitting)return;
+       categorySubmitting=true;stateRevision++;
+       Array.prototype.forEach.call(categoryList.querySelectorAll('button'),function(btn){btn.disabled=true;});
+       categoryStatus.textContent='Saving category…';
+       api('/imposter/category',{category:category})
+        .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+        .then(function(x){
+         if(!x.r.ok||!x.j.ok){
+          var messages={invalid_category:'Choose a category from the list.',
+           not_word_chooser:'Only the selected word chooser can pick the category.',
+           invalid_game_session:'Your session expired. Reload this page and join again.',
+           server_error:'PiTV encountered an error saving the category. Check the guest service log.'};
+          categoryStatus.textContent=messages[x.j.error]||('PiTV could not accept the category (HTTP '+x.r.status+'). Try again.');
+          categorySubmitting=false;stateRevision++;
+          Array.prototype.forEach.call(categoryList.querySelectorAll('button'),function(btn){btn.disabled=false;});
+          return;
+         }
+         categorySubmitting=false;stateRevision++;poll();
+        })
+        .catch(function(error){
+         console.error('PiTV Imposter category POST failed:',error);
+         categoryStatus.textContent='Could not contact PiTV. Check your Wi-Fi and try again.';
+         categorySubmitting=false;stateRevision++;
+         Array.prototype.forEach.call(categoryList.querySelectorAll('button'),function(btn){btn.disabled=false;});
+        });
+      });
+      categoryList.appendChild(b);
+     });
+     content.appendChild(categoryList);content.appendChild(categoryStatus);
+    }else{
+     content.appendChild(el('div','YOU ARE A PLAYER','imposter-role good'));
+     content.appendChild(el('p','The word chooser is choosing a category. Your word will appear on your phone when it has been selected.','imposter-note'));
+    }
    }else if(phase==='choose_word'){
     if(role==='imposter'){
      content.appendChild(el('div','YOU ARE THE IMPOSTER','imposter-role bad'));
-     content.appendChild(el('p','You will not receive the word. Listen carefully and try to blend in.','imposter-note'));
+     content.appendChild(el('p','YOUR CATEGORY','muted'));
+     content.appendChild(el('div',s.category||'Waiting for category…','imposter-word'));
+     content.appendChild(el('p','You know the category, but not the exact word. Listen carefully and blend in.','imposter-note'));
     }else if(role==='chooser'){
      content.appendChild(el('div','YOU CHOOSE THE WORD','imposter-role pick'));
-     content.appendChild(el('p','Choose one word, then tap Enter to show it to every non-imposter.','imposter-note'));
-     var form=el('form');form.id='imposterWordForm';var inp=el('input');inp.id='imposterWord';inp.maxLength=40;inp.placeholder='Choose a word';inp.required=true;
-     var btn=el('button','Enter');btn.type='submit';form.appendChild(inp);form.appendChild(btn);
+     content.appendChild(el('p','Pick one word from this category. The imposter can see the category but not your selected word.','imposter-note'));
+     content.appendChild(el('div',s.category||'Selected category','imposter-word'));
+     var wordList=el('div',null,'imposter-list');
      var wordStatus=el('p','','muted');wordStatus.id='imposterWordStatus';wordStatus.setAttribute('aria-live','polite');
-     form.addEventListener('submit',function(e){
-      e.preventDefault();
-      if(wordSubmitting)return;
-      var word=inp.value.trim();
-      if(!word){wordStatus.textContent='Enter a word first.';inp.focus();return;}
-      wordSubmitting=true;stateRevision++;btn.disabled=true;
-      wordStatus.textContent='Sending word to PiTV…';
-      api('/action',{action:'imposter_word',word:word})
-       .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
-       .then(function(x){
-        if(!x.r.ok||!x.j.ok){
-         var messages={invalid_word:'Enter a word of 1–40 characters.',
-          not_word_chooser:'Only the selected word chooser can submit the word.',
-          invalid_game_session:'Your session expired. Reload this page and join again.',
-          server_error:'PiTV received the word but encountered a server error. Check the PiTV guest service log.'};
-         wordStatus.textContent=messages[x.j.error]||('PiTV could not accept the word (HTTP '+x.r.status+'). Try again.');
-         wordSubmitting=false;btn.disabled=false;inp.focus();return;
-        }
-        wordStatus.textContent='Word accepted. Moving to the round…';
-        wordSubmitting=false;stateRevision++;poll();
-       })
-       .catch(function(error){
-        console.error('PiTV Imposter word POST failed:',error);
-        wordStatus.textContent='The word request failed before PiTV returned a response: '+(error&&error.message?error.message:'network error')+'. Check the PiTV guest service log.';
-        wordSubmitting=false;btn.disabled=false;
-       });
+     (s.words||[]).forEach(function(word){
+      var b=el('button',word);b.type='button';
+      b.addEventListener('click',function(){
+       if(wordSubmitting)return;
+       wordSubmitting=true;stateRevision++;
+       Array.prototype.forEach.call(wordList.querySelectorAll('button'),function(btn){btn.disabled=true;});
+       wordStatus.textContent='Sending word to PiTV…';
+       api('/imposter/word',{word:word})
+        .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {r:r,j:j};});})
+        .then(function(x){
+         if(!x.r.ok||!x.j.ok){
+          var messages={invalid_word:'Choose a word from the selected category.',
+           not_word_chooser:'Only the selected word chooser can submit the word.',
+           invalid_game_session:'Your session expired. Reload this page and join again.',
+           server_error:'PiTV received the word but encountered a server error. Check the PiTV guest service log.'};
+          wordStatus.textContent=messages[x.j.error]||('PiTV could not accept the word (HTTP '+x.r.status+'). Try again.');
+          wordSubmitting=false;stateRevision++;
+          Array.prototype.forEach.call(wordList.querySelectorAll('button'),function(btn){btn.disabled=false;});
+          return;
+         }
+         wordStatus.textContent='Word accepted. Moving to the round…';
+         wordSubmitting=false;stateRevision++;poll();
+        })
+        .catch(function(error){
+         console.error('PiTV Imposter word POST failed:',error);
+         wordStatus.textContent='Could not contact PiTV. Check your Wi-Fi and try again.';
+         wordSubmitting=false;stateRevision++;
+         Array.prototype.forEach.call(wordList.querySelectorAll('button'),function(btn){btn.disabled=false;});
+        });
+      });
+      wordList.appendChild(b);
      });
-     content.appendChild(form);content.appendChild(wordStatus);
+     content.appendChild(wordList);content.appendChild(wordStatus);
     }else{
      content.appendChild(el('div','YOU ARE A PLAYER','imposter-role good'));
-     content.appendChild(el('p','Waiting for the word to be chosen. Keep your role secret.','imposter-note'));
+     content.appendChild(el('p','The category has been chosen. Waiting for the exact word.','imposter-note'));
     }
    }else if(phase==='round'){
-    if(role==='imposter'){
-     content.appendChild(el('div','YOU ARE THE IMPOSTER','imposter-role bad'));
-     content.appendChild(el('p','You do not know the word. Try to blend in.','imposter-note'));
-    }else{
-     content.appendChild(el('p','YOUR WORD','muted'));
-     content.appendChild(el('div',s.word||'Waiting for word…','imposter-word'));
-    }
+    appendSecretClue(s,role);
     if(s.current_turn && s.current_turn===s.you){
      content.appendChild(el('div',"IT'S YOUR TURN",'imposter-role pick'));
      content.appendChild(el('p','Give a clue without saying the exact word, then tap I’m done.','imposter-note'));
@@ -972,9 +1027,11 @@ def imposter_join_body(game_id):
      content.appendChild(el('p',(s.current_turn||'The next player')+' is giving a clue. Wait for your turn.','imposter-note'));
     }
    }else if(phase==='round_complete'){
+    appendSecretClue(s,role);
     content.appendChild(el('div','ROUND COMPLETE','imposter-role pick'));
     content.appendChild(el('p','Continue with as many clue rounds as you like using the same roles and word, or start the vote when you are ready.','imposter-note'));
    }else if(phase==='vote'){
+    appendSecretClue(s,role);
     content.appendChild(el('p','Who do you think is the imposter? You may change your vote until time runs out.','imposter-note'));
     var cd=el('p','15 seconds left','imposter-countdown');cd.id='voteCountdown';content.appendChild(cd);
     var list=el('div',null,'imposter-list');list.id='imposterVoteList';
@@ -989,12 +1046,14 @@ def imposter_join_body(game_id):
     });content.appendChild(list);
     var status=el('p','','muted');status.id='imposterVoteStatus';content.appendChild(status);
    }else if(phase==='results'){
+    appendSecretClue(s,role);
     content.appendChild(el('div','VOTE CLOSED','imposter-role pick'));
     content.appendChild(el('p','The results are being revealed on the TV.','imposter-note'));
    }else if(phase==='revealed'){
     content.appendChild(el('div','THE IMPOSTER WAS','imposter-role bad'));
     content.appendChild(el('div',s.imposter||'Unknown','imposter-word'));
     if(s.word)content.appendChild(el('p','The word was: '+s.word,'imposter-note'));
+    if(s.category)content.appendChild(el('p','Category: '+s.category,'imposter-note'));
    }else content.appendChild(el('p','The game has ended.','imposter-note'));
   }
   if(phase==='join'){var p=document.getElementById('imposterJoinProgress');if(p)p.textContent='Players connected: '+s.joined_count+' / '+s.player_count;}
@@ -1011,7 +1070,7 @@ def imposter_join_body(game_id):
   }
  }
  function poll(){
-  if(!token||polling||wordSubmitting||turnSubmitting)return;
+  if(!token||polling||categorySubmitting||wordSubmitting||turnSubmitting)return;
   polling=true;
   var revision=stateRevision;
   api('/imposter/state',{}).then(function(r){
@@ -1076,6 +1135,22 @@ def _imposter_api_post(self, path, body=None):
         self._json({"ok": False, "error": "invalid_game_session"}, code=401)
     elif path == "/imposter/state":
         self._json(view)
+    elif path == "/imposter/category":
+        try:
+            result = pitv_imposter.choose_category(game_id, token, body.get("category", ""))
+        except Exception as exc:
+            print(
+                f"Imposter category submission failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            self._json({"ok": False, "error": "server_error"}, code=500)
+            return
+        if not result.get("ok"):
+            print(
+                f"Imposter category submission refused: {result.get('error', 'unknown')}",
+                flush=True,
+            )
+        self._json(result, code=200 if result.get("ok") else 409)
     elif path == "/imposter/word":
         raw = body.get("word", "")
         word = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", raw).split())
@@ -2144,6 +2219,9 @@ class Handler(BaseHTTPRequestHandler):
             action_body = self._body()
             if action_body is None:
                 self._json({"ok": False, "error": "bad_request"}, code=413)
+                return
+            if action_body.get("action", "") == "imposter_category":
+                _imposter_api_post(self, "/imposter/category", action_body)
                 return
             if action_body.get("action", "") == "imposter_word":
                 _imposter_api_post(self, "/imposter/word", action_body)
