@@ -199,6 +199,8 @@ settings_confirm_action = ""
 settings_confirm_label = ""
 settings_confirm_return_page = "ROOT"
 settings_bt_devices = []
+settings_controller_cache_at = 0.0
+settings_controller_cache = []
 settings_log_lines = []
 settings_log_scroll = 0
 settings_busy = ""
@@ -4209,6 +4211,47 @@ def _settings_guest_names():
         return []
 
 
+def _settings_controller_status():
+    """Return a cached, user-friendly view of active evdev gamepads."""
+    global settings_controller_cache_at, settings_controller_cache
+    if not EVDEV_OK:
+        return "INPUT SUPPORT MISSING"
+    now = time.monotonic()
+    if now - settings_controller_cache_at < 3.0:
+        names = list(settings_controller_cache)
+    else:
+        names = []
+        exclude = ("imu", "motion", "sensor", "accel", "gyro", "hdmi", "audio", "sound")
+        include = ("controller", "gamepad", "joystick", "joypad", "xbox",
+                   "playstation", "dualshock", "dualsense", "8bitdo", "pro controller")
+        try:
+            for device_path in evdev.list_devices():
+                try:
+                    device = evdev.InputDevice(device_path)
+                    name = str(device.name or "Gamepad").strip()
+                    lower = name.casefold()
+                    likely = (not any(token in lower for token in exclude)
+                              and any(token in lower for token in include))
+                    if not likely:
+                        caps = device.capabilities()
+                        btns = {code for code in caps.get(ecodes.EV_KEY, [])
+                                if isinstance(code, int) and code >= 304}
+                        likely = (not any(token in lower for token in exclude)
+                                  and ecodes.EV_ABS in caps and ecodes.EV_KEY in caps
+                                  and len(btns) >= 4)
+                    if likely and name not in names:
+                        names.append(name)
+                    device.close()
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        settings_controller_cache = names[:5]
+        settings_controller_cache_at = now
+        names = list(settings_controller_cache)
+    return f"{len(names)} connected" if names else "NONE CONNECTED"
+
+
 def _settings_guest_mode():
     return _settings_read_flag(GUEST_MODE_FILE, False)
 
@@ -4266,6 +4309,8 @@ def _settings_current_items():
         ]
     if page == "CONTROLLERS":
         items = [
+            ("Controller status", _settings_controller_status(),
+             "Shows gamepads currently exposed to Linux input", "BT_STATUS"),
             ("Scan for controllers", "", "Search nearby Bluetooth devices for 15 seconds", "BT_SCAN"),
         ]
         for device in settings_bt_devices[:8]:
@@ -4825,8 +4870,9 @@ def _settings_select_action(item):
     elif action == "BT_PAIR":
         _settings_pair_bluetooth(payload)
     elif action == "BT_STATUS":
+        status = _settings_controller_status()
         _controller_scan_event.set()
-        _settings_set_message("Controller listener asked to rescan connected gamepads.")
+        _settings_set_message(f"Detected controllers: {status}. PiTV has been asked to rescan.")
     elif action == "PIN_ADD":
         _settings_begin_text_input("Name for the new player PIN", "text", "PIN_ADD")
     elif action == "PIN_OPEN":
