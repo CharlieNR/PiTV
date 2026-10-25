@@ -171,6 +171,37 @@ force_home_requested = False     # sticky until a blocking runner returns
 selected_art_idx    = 0
 selected_game_idx   = 0
 selected_dur_idx    = 0
+
+# V2 home navigation has independent focus for the carousel, shortcuts, recent
+# games and top navigation. The carousel's animated position lives in pitv_tvui.
+home_focus          = "carousel"
+home_nav_selected   = 0
+selected_recent_idx = 0
+
+# Settings menu state (device data remains in pitv_state.py, not these globals).
+settings_page = "ROOT"
+settings_selected = 0
+settings_authorized_until = 0.0
+settings_pending_page = "ROOT"
+settings_auth_entered = ""
+settings_key_row = 0
+settings_key_col = 0
+settings_message = ""
+settings_message_until = 0.0
+settings_input_prompt = ""
+settings_input_mode = "text"
+settings_input_context = ""
+settings_input_return_page = "ROOT"
+settings_text = ""
+settings_selected_name = ""
+settings_selected_temporary = False
+settings_confirm_action = ""
+settings_confirm_label = ""
+settings_log_lines = []
+settings_log_scroll = 0
+settings_busy = ""
+settings_task_lock = threading.Lock()
+
 active_art_type     = None
 art_stop_time       = None
 input_queue: list   = []
@@ -586,6 +617,12 @@ def listen_fifo():
 
                     if cmd == "LOG_CLEAR":
                         log_clear()
+                        continue
+                    if cmd == "SETTINGS":
+                        # Opening Settings during a running console game is
+                        # ignored rather than injecting an unknown command.
+                        if controller_mode != "GAME_EXTERNAL":
+                            input_queue.append("OPEN_SETTINGS")
                         continue
                     if cmd == "SCAN_CONTROLLER":
                         log("Controller scan triggered")
