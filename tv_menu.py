@@ -1560,12 +1560,11 @@ def run_imposter(stdscr,players: list[str]) -> None:
                             if join_viewer is not None:
                                 join_image_joined = joined_count
                             else:
-                                _imposter_draw_lines(stdscr,"JOIN QR DISPLAY ERROR",[
-                                    "The QR PNG was prepared, but direct framebuffer drawing failed.",
-                                    "Check /tmp/pitv.log for the exact device or pixel-format error.",
-                                    url,
-                                    "No character-based QR substitute is being shown.",
-                                ])
+                                _imposter_render_screen({"view": "IMPOSTER_ERROR",
+                                    "error_title": "JOIN QR DISPLAY ERROR",
+                                    "error_message": "The prepared QR image could not be displayed.",
+                                    "join_url": url}, "JOIN QR DISPLAY ERROR",
+                                    ["The prepared QR image could not be displayed.", url])
                         else:
                             if join_viewer is not None:
                                 image_path = _imposter_update_join_count(joined_count, len(players))
@@ -1599,19 +1598,17 @@ def run_imposter(stdscr,players: list[str]) -> None:
                                 if join_viewer is not None:
                                     join_image_joined=joined_count
                                 else:
-                                    _imposter_draw_lines(stdscr,"JOIN QR DISPLAY ERROR",[
-                                        "The QR PNG was generated, but direct framebuffer drawing failed.",
-                                        "Check /tmp/pitv.log for the exact device or pixel-format error.",
-                                        url,
-                                        "No character-based QR substitute is being shown.",
-                                    ])
+                                    _imposter_render_screen({"view": "IMPOSTER_ERROR",
+                                        "error_title": "JOIN QR DISPLAY ERROR",
+                                        "error_message": "The generated QR image could not be displayed.",
+                                        "join_url": url}, "JOIN QR DISPLAY ERROR",
+                                        ["The generated QR image could not be displayed.", url])
                             elif join_viewer is None:
-                                _imposter_draw_lines(stdscr,"QR IMAGE GENERATION ERROR",[
-                                    "PiTV could not create the QR PNG image.",
-                                    "Check /tmp/pitv.log for the Python QR/Pillow error.",
-                                    url,
-                                    "No character-based QR substitute is being shown.",
-                                ])
+                                _imposter_render_screen({"view": "IMPOSTER_ERROR",
+                                    "error_title": "QR IMAGE GENERATION ERROR",
+                                    "error_message": "PiTV could not create a real QR image.",
+                                    "join_url": url}, "QR IMAGE GENERATION ERROR",
+                                    ["PiTV could not create a QR image.", url])
                 elif phase=="choose_word":
                     _imposter_render_screen({
                         "view": "IMPOSTER_WORD",
