@@ -828,14 +828,41 @@ def _carousel_worker():
         for step in range(1, steps+1):
             fraction = step / steps
             eased = fraction * fraction * (3.0 - 2.0 * fraction)
+            position = start + (destination-start) * eased
+            # Generate the frame without holding the shared state lock. The
+            # input loop and full-screen renderer can continue while Pillow
+            # composes the artwork; generation is rechecked before writing.
             with _CAROUSEL_LOCK:
                 if (_CAROUSEL["generation"] != generation
                         or _CAROUSEL["view"] != "MENU"
                         or not _CAROUSEL["items"]):
                     interrupted = True
                     break
-                position = start + (destination-start) * eased
-                strip = _draw_carousel_strip(list(_CAROUSEL["items"]), position)
+                draw_items = list(_CAROUSEL["items"])
+            try:
+                strip = _draw_carousel_strip(draw_items, position)
+            except Exception as exc:
+                with _CAROUSEL_LOCK:
+                    if _CAROUSEL["generation"] == generation:
+                        _CAROUSEL["error"] = True
+                        _CAROUSEL["target"] = None
+                        _CAROUSEL["generation"] += 1
+                interrupted = True
+                try:
+                    print(f"PiTV carousel drawing disabled after error: {type(exc).__name__}: {exc}")
+                except Exception:
+                    pass
+                break
+
+            # Keep the same lock order as the full renderer: carousel state,
+            # then framebuffer lock. If another view arrived while drawing,
+            # discard this stale frame instead of overwriting that screen.
+            with _CAROUSEL_LOCK:
+                if (_CAROUSEL["generation"] != generation
+                        or _CAROUSEL["view"] != "MENU"
+                        or draw_items != _CAROUSEL["items"]):
+                    interrupted = True
+                    break
                 try:
                     pitv_framebuffer.display_image_region(
                         strip, (0, 70, WIDTH, 365), source_size=(WIDTH, HEIGHT)
