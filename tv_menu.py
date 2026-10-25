@@ -4546,19 +4546,19 @@ def _settings_submit_input():
         _settings_run_pin_command(["assign", value], f"Created PIN for {value}", reveal_pin=True)
     elif context == "PIN_RENAME":
         old = settings_selected_name
-        current_view = "SETTINGS"
-        settings_page = "PIN_DETAIL"
-        settings_selected = 0
         existing_names = {record["name"].casefold() for record in _settings_pin_records()
                            if record["name"].casefold() != old.casefold()}
         if value.casefold() == old.casefold():
             _settings_set_message("The name has not changed.")
-        elif value.casefold() in existing_names:
+            return
+        if value.casefold() in existing_names:
             _settings_set_message("Another player already has that name.")
             return
-        else:
-            _settings_run_pin_command(["rename", old, value], f"Renamed {old} to {value}")
-            settings_selected_name = value
+        current_view = "SETTINGS"
+        settings_page = "PIN_DETAIL"
+        settings_selected = 0
+        _settings_run_pin_command(["rename", old, value], f"Renamed {old} to {value}")
+        settings_selected_name = value
     elif context == "PIN_CHANGE":
         if not (len(value) == 6 and value.isdigit()):
             _settings_set_message("PINs must be exactly six digits.")
@@ -5243,7 +5243,7 @@ def main(stdscr):
                         list("ABCDEFG"), list("HIJKLMN"), list("OPQRSTU"),
                         ["V","W","X","Y","Z","_","<"],
                         ["0","1","2","3","4","5","6"],
-                        ["7","8","9","-",".","@","DONE"],
+                        ["7","8","9","-",".","CASE","DONE"],
                     ]
                 if cmd == "UP":
                     settings_key_row = max(0, settings_key_row-1)
@@ -5266,13 +5266,15 @@ def main(stdscr):
                         settings_text = settings_text[:-1]
                     elif key in ("OK", "DONE"):
                         _settings_submit_input()
+                    elif key == "CASE":
+                        settings_input_lowercase = not settings_input_lowercase
                     elif key == "_":
                         if len(settings_text) < 40:
                             settings_text += " "
                     elif len(key) == 1 and (key.isalnum() or key in "-.@"):
                         max_length = 6 if settings_input_mode == "pin" else 40
                         if len(settings_text) < max_length:
-                            settings_text += key
+                            settings_text += key.lower() if settings_input_lowercase and key.isalpha() else key
 
             elif current_view == "SETTINGS_LOG":
                 if cmd == "UP":
@@ -5694,6 +5696,7 @@ def main(stdscr):
                     "settings_key_col": settings_key_col,
                     "settings_input_prompt": settings_input_prompt,
                     "settings_input_mode": settings_input_mode,
+                    "settings_input_lowercase": settings_input_lowercase,
                     "settings_text": settings_text,
                     "settings_log_lines": settings_log_lines,
                     "settings_log_scroll": settings_log_scroll,
