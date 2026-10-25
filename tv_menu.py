@@ -4872,7 +4872,7 @@ def main(stdscr):
     global settings_page, settings_selected, settings_authorized_until
     global settings_pending_page, settings_auth_entered, settings_key_row, settings_key_col
     global settings_message, settings_message_until, settings_input_prompt
-    global settings_input_mode, settings_input_context, settings_input_return_page, settings_text
+    global settings_input_mode, settings_input_lowercase, settings_input_context, settings_input_return_page, settings_text
     global settings_selected_name, settings_selected_temporary
     global settings_confirm_action, settings_confirm_label, settings_confirm_return_page
     global settings_log_scroll, settings_log_lines
