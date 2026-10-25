@@ -4380,6 +4380,43 @@ def _settings_refresh_logs():
     settings_log_scroll = max(0, len(safe)-18)
 
 
+def _settings_start_maintenance(action, branch=None):
+    """Request a fixed, whitelisted maintenance action through PiTV's root helper."""
+    if action == "update" and branch in ("experimental", "main"):
+        args = ["update", branch]
+        label = f"Update from {branch}"
+    elif action == "restart-menu":
+        args = ["restart-menu"]
+        label = "PiTV menu restart"
+    elif action == "reboot":
+        args = ["reboot"]
+        label = "Raspberry Pi reboot"
+    else:
+        _settings_set_message("Unsupported maintenance operation.")
+        return False
+
+    def worker():
+        command = ["/usr/bin/sudo", "-n", "/usr/local/sbin/pitv-maintenance"] + args
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _settings_set_message(
+                f"{label} could not start: {type(exc).__name__}. Run deploy.sh to install maintenance support."
+            )
+            log(f"Settings maintenance launch failed: {type(exc).__name__}")
+            return
+        if result.returncode:
+            _settings_set_message(
+                "Maintenance request failed. Check Settings → Logs or deploy the latest experimental branch."
+            )
+            log(f"Settings maintenance request failed ({action}, exit {result.returncode}).")
+            return
+        _settings_set_message(f"{label} queued. See Maintenance status for progress.", 20)
+        log(f"Settings requested {label}.")
+    return _settings_start_task(label, worker)
+
+
 def _settings_start_task(label, worker):
     """Run slow system actions away from the input and framebuffer loops."""
     global settings_busy
