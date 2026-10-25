@@ -704,6 +704,8 @@ _CAROUSEL = {
     "pause_until": 0.0,
     "next_auto": time.monotonic() + 8.0,
     "error": False,
+    # Incremented when regional animation fails over to instant full-frame updates.
+    "revision": 0,
 }
 
 
@@ -714,6 +716,12 @@ def carousel_index():
         if not items:
             return 0
         return int(round(float(_CAROUSEL.get("position", 0.0)))) % len(items)
+
+
+def carousel_revision():
+    """Revision token for an instant-render fallback after regional write errors."""
+    with _CAROUSEL_LOCK:
+        return int(_CAROUSEL.get("revision", 0))
 
 
 def suspend_carousel():
@@ -727,17 +735,31 @@ def suspend_carousel():
 
 
 def request_carousel_step(direction):
-    """Request a smooth one-card move; rapid input updates the pending target."""
+    """Request a smooth one-card move; use instant movement if regional writes failed."""
     direction = 1 if int(direction) > 0 else -1
     with _CAROUSEL_LOCK:
         items = _CAROUSEL.get("items") or []
         if _CAROUSEL.get("view") != "MENU" or len(items) < 2:
             return False
+        now = time.monotonic()
+        if _CAROUSEL["error"]:
+            # Regional framebuffer updates are an optimisation, not a
+            # prerequisite for working navigation. The normal full-screen
+            # renderer notices the revision and paints the new card instantly.
+            base = round(float(_CAROUSEL["position"]))
+            _CAROUSEL["position"] = float((base + direction) % len(items))
+            _CAROUSEL["target"] = None
+            _CAROUSEL["generation"] += 1
+            _CAROUSEL["revision"] += 1
+            _CAROUSEL["pause_until"] = now + 6.0
+            _CAROUSEL["next_auto"] = _CAROUSEL["pause_until"] + float(_CAROUSEL["interval"])
+            _CAROUSEL_WAKE.set()
+            return True
         base = (_CAROUSEL["target"] if _CAROUSEL["target"] is not None
                 else round(float(_CAROUSEL["position"])))
         _CAROUSEL["target"] = int(base) + direction
         _CAROUSEL["generation"] += 1
-        _CAROUSEL["pause_until"] = time.monotonic() + 6.0
+        _CAROUSEL["pause_until"] = now + 6.0
         _CAROUSEL["next_auto"] = _CAROUSEL["pause_until"] + float(_CAROUSEL["interval"])
         _CAROUSEL_WAKE.set()
         return True
@@ -801,9 +823,17 @@ def _carousel_worker():
             next_auto = float(_CAROUSEL["next_auto"])
             pause_until = float(_CAROUSEL["pause_until"])
             failed = bool(_CAROUSEL["error"])
-            if view == "MENU" and len(items) > 1 and not failed and target is None:
+            if view == "MENU" and len(items) > 1 and target is None:
                 due = max(next_auto, pause_until)
-                if enabled and now >= due:
+                if enabled and now >= due and failed:
+                    # If regional updates are unsupported, keep auto-advance
+                    # functional by requesting a normal full render instead.
+                    current = round(float(_CAROUSEL["position"]))
+                    _CAROUSEL["position"] = float((current + 1) % len(items))
+                    _CAROUSEL["revision"] += 1
+                    _CAROUSEL["generation"] += 1
+                    _CAROUSEL["next_auto"] = now + float(_CAROUSEL["interval"])
+                elif enabled and now >= due and not failed:
                     target = round(float(_CAROUSEL["position"])) + 1
                     _CAROUSEL["target"] = target
                     _CAROUSEL["generation"] += 1
@@ -812,10 +842,10 @@ def _carousel_worker():
             start = float(_CAROUSEL["position"])
             target = _CAROUSEL["target"]
             interval = float(_CAROUSEL["interval"])
-        if view != "MENU" or len(items) < 2 or failed or target is None:
+        if view != "MENU" or len(items) < 2 or target is None:
             wait_for = 0.25
             with _CAROUSEL_LOCK:
-                if enabled and view == "MENU" and not failed:
+                if enabled and view == "MENU" and len(items) > 1:
                     wait_for = min(wait_for, max(0.03, max(next_auto, pause_until)-time.monotonic()))
             _CAROUSEL_WAKE.wait(wait_for)
             _CAROUSEL_WAKE.clear()
