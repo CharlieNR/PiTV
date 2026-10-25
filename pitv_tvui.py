@@ -202,10 +202,21 @@ def _native_resolution(canvas):
 
     # Upscaling is common on HDMI TVs. Nearest-neighbour is effectively free
     # compared with Lanczos and keeps the text crisp instead of softening it.
-    upscaling = target[0] >= canvas.width and target[1] >= canvas.height
-    method = _RESAMPLING.NEAREST if upscaling else _RESAMPLING.BILINEAR
     ratio_src = canvas.width / canvas.height
     ratio_dst = target[0] / target[1]
+    upscaling = target[0] >= canvas.width and target[1] >= canvas.height
+
+    # Let prepare_image fuse the common 16:9 upscale + RGB565 conversion into
+    # one native pass. This removes a temporary 1920x1080 Pillow image and a
+    # separate full-screen pixel-pack pass on the Pi Zero 2 W.
+    if (
+        upscaling
+        and abs(ratio_src - ratio_dst) < 0.002
+        and getattr(pitv_framebuffer, "NATIVE_RGB565_SCALE_PACK_AVAILABLE", False)
+    ):
+        return canvas
+
+    method = _RESAMPLING.NEAREST if upscaling else _RESAMPLING.BILINEAR
     if abs(ratio_src - ratio_dst) < 0.002:
         return canvas.resize(target, resample=method)
 
@@ -1175,7 +1186,7 @@ def render(state, log_fn=None):
         try:
             log_fn(
                 "V2 graphic render {:.2f}s (draw {:.2f}s, scale {:.2f}s, "
-                "pixel packing {:.2f}s [{}; {}bpp R{} G{} B{}], "
+                "frame preparation {:.2f}s [{}; {}bpp R{} G{} B{}], "
                 "framebuffer write {:.2f}s)".format(
                     total_elapsed, draw_elapsed, scale_elapsed,
                     prepare_elapsed,
