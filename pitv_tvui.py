@@ -693,6 +693,7 @@ _CAROUSEL_LOCK = threading.RLock()
 _CAROUSEL_WAKE = threading.Event()
 _CAROUSEL_STOP = threading.Event()
 _CAROUSEL_THREAD = None
+_CAROUSEL_LOGGER = None
 _CAROUSEL = {
     "view": None,
     "items": [],
@@ -852,8 +853,11 @@ def _carousel_worker():
             continue
 
         destination = float(target)
-        duration = 0.38
-        steps = 10
+        # The six eased frames are primed at startup; measured wall time
+        # includes image composition and regional framebuffer writes.
+        transition_started = time.monotonic()
+        duration = 0.18
+        steps = 6
         interrupted = False
         for step in range(1, steps+1):
             fraction = step / steps
@@ -909,8 +913,11 @@ def _carousel_worker():
                         pass
                     break
                 _CAROUSEL["position"] = position
-            time.sleep(duration / steps)
+            if step < steps:
+                time.sleep(duration / steps)
 
+        transition_elapsed = time.monotonic() - transition_started
+        logger = None
         with _CAROUSEL_LOCK:
             if interrupted:
                 continue
@@ -919,6 +926,13 @@ def _carousel_worker():
                 _CAROUSEL["target"] = None
                 _CAROUSEL["next_auto"] = time.monotonic() + interval
                 _CAROUSEL_WAKE.clear()
+                logger = _CAROUSEL_LOGGER
+        if logger is not None:
+            prefix = "SLOW " if transition_elapsed > 0.5 else ""
+            try:
+                logger(f"{prefix}V2 carousel transition {transition_elapsed:.2f}s ({steps} regional frames)")
+            except Exception:
+                pass
 
 
 def _draw_home(canvas, state):
@@ -1682,7 +1696,9 @@ def _draw_clock_region(clock_text):
 
 def render(state, log_fn=None):
     """Render only changed screens; the home carousel animates in its own region worker."""
-    global _LAST_SIGNATURE, _LAST_PREPARED, _LAST_CLOCK_TEXT
+    global _LAST_SIGNATURE, _LAST_PREPARED, _LAST_CLOCK_TEXT, _CAROUSEL_LOGGER
+    if log_fn is not None:
+        _CAROUSEL_LOGGER = log_fn
     total_started = time.monotonic()
     now = _display_clock_text()
     state = dict(state)
@@ -1813,7 +1829,8 @@ def render(state, log_fn=None):
     if log_fn is not None:
         try:
             log_fn(
-                "V2 graphic render {:.2f}s (draw {:.2f}s, scale {:.2f}s, "
+                ("SLOW " if total_elapsed > 0.5 else "")
+                + "V2 graphic render {:.2f}s (draw {:.2f}s, scale {:.2f}s, "
                 "frame preparation {:.2f}s [{}; {}bpp R{} G{} B{}], "
                 "framebuffer write {:.2f}s)".format(
                     total_elapsed, draw_elapsed, scale_elapsed,
