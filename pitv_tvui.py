@@ -1003,8 +1003,13 @@ def _draw_settings_input(canvas, state):
             list("OPQRSTU"),
             ["V", "W", "X", "Y", "Z", "_", "<"],
             ["0","1","2","3","4","5","6"],
-            ["7","8","9","-",".","@","DONE"],
+            ["7","8","9","-",".","CASE","DONE"],
         ]
+        if state.get("settings_input_lowercase"):
+            layout = [
+                [key.lower() if len(key) == 1 and key.isalpha() else key for key in row]
+                for row in layout
+            ]
     row_sel = max(0, min(len(layout)-1, int(state.get("settings_key_row",0))))
     col_sel = max(0, min(max(len(row) for row in layout)-1, int(state.get("settings_key_col",0))))
     if mode in ("pin", "auth_pin"):
@@ -1024,7 +1029,7 @@ def _draw_settings_input(canvas, state):
                                 fill=(22, 83, 143) if chosen else PANEL,
                                 outline=CYAN if chosen else (39,63,99),
                                 width=3 if chosen else 1)
-            label = {"_":"SPACE","<":"DELETE","DONE":"DONE"}.get(key,key)
+            label = {"_":"SPACE","<":"DELETE","CASE":"case","DONE":"DONE"}.get(key,key)
             _label(d,(x+card_w//2,y+card_h//2),label,15,WHITE,True,anchor="mm")
     _label(d, (640, 660), "ARROWS  MOVE     SELECT  ADD CHARACTER     BACK  CANCEL",
            12, MUTED, True, anchor="mm")
