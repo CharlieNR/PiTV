@@ -132,6 +132,41 @@ def _icon_base(icon_name: str) -> Image.Image:
         return opened.convert("RGBA")
 
 
+
+# Icons directly used by V2 screens in addition to destination-card artwork.
+_STANDALONE_UI_ICONS = {
+    "airplay",
+    "bug",
+    "chart-no-axes-combined",
+    "clock",
+    "gamepad-2",
+    "house",
+    "lock-keyhole",
+    "monitor",
+    "scroll-text",
+    "user-round",
+}
+
+
+def warm_icon_cache() -> int:
+    """Pre-rasterise bundled icons during deployment, not during TV navigation.
+
+    CairoSVG's first rasterisation of an icon can take long enough to cause a
+    visible pause on a Pi Zero. This fills the persistent PNG cache for all
+    mapped destination icons and standalone V2 screen icons before the UI
+    service starts. Failures are reported but never make deployment fail.
+    """
+    names = sorted(set(ICON_MAP.values()) | _STANDALONE_UI_ICONS)
+    warmed = 0
+    for name in names:
+        try:
+            _icon_base(name)
+            warmed += 1
+        except Exception as exc:
+            print(f"WARNING: could not prewarm PiTV icon {name!r}: {exc}")
+    return warmed
+
+
 @lru_cache(maxsize=128)
 def load_icon(icon_name: str, size: int = 64) -> Image.Image:
     """Return a correctly proportioned transparent icon at the requested size."""
