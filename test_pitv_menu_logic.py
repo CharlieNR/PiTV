@@ -76,7 +76,7 @@ class SettingsGuardTests(unittest.TestCase):
 
         self.assertEqual(tv_menu.current_view, "SETTINGS")
         self.assertEqual(tv_menu.settings_page, "SYSTEM")
-        self.assertEqual(tv_menu.settings_selected, 6)
+        self.assertEqual(tv_menu.settings_selected, 7)
         self.assertIn("private admin code", tv_menu.settings_message.lower())
 
     def test_expired_authorisation_reopens_admin_code_prompt(self):
@@ -157,6 +157,57 @@ class MaintenanceStatusTests(unittest.TestCase):
         self.assertEqual(status["status"], "up-to-date")
         self.assertEqual(status["message"], "No new updates are available on experimental.")
         self.assertEqual(status["branch"], "experimental")
+
+
+class TerminalTailTests(unittest.TestCase):
+    def setUp(self):
+        self.names = (
+            "settings_update_terminal_lines", "settings_update_terminal_scroll",
+            "settings_update_terminal_follow", "settings_update_terminal_last_refresh",
+            "settings_update_terminal_started_at", "settings_update_terminal_launch_error",
+            "settings_update_terminal_status", "settings_update_terminal_log_offset",
+            "settings_update_terminal_log_identity", "settings_update_terminal_partial_line",
+        )
+        self.old = {name: getattr(tv_menu, name) for name in self.names}
+
+    def tearDown(self):
+        for name, value in self.old.items():
+            setattr(tv_menu, name, value)
+
+    def test_terminal_reader_appends_only_new_output_and_finishes_partial_line(self):
+        with tempfile.TemporaryDirectory() as temp:
+            log_path = f"{temp}/update.log"
+            with open(log_path, "w", encoding="utf-8") as handle:
+                handle.write("first line\nsecond")
+            tv_menu.settings_update_terminal_lines = []
+            tv_menu.settings_update_terminal_scroll = 0
+            tv_menu.settings_update_terminal_follow = True
+            tv_menu.settings_update_terminal_last_refresh = 0.0
+            tv_menu.settings_update_terminal_started_at = 0.0
+            tv_menu.settings_update_terminal_launch_error = ""
+            tv_menu.settings_update_terminal_log_offset = 0
+            tv_menu.settings_update_terminal_log_identity = None
+            tv_menu.settings_update_terminal_partial_line = ""
+            status = {"status": "running", "message": "Updating", "branch": "experimental",
+                      "updated_at": int(time.time())}
+            with (
+                patch.object(tv_menu, "UPDATE_TERMINAL_LOG_PATH", log_path),
+                patch.object(tv_menu, "_settings_maintenance_status", return_value=status),
+            ):
+                tv_menu._settings_refresh_update_terminal(force=True)
+                self.assertEqual(tv_menu.settings_update_terminal_lines[-1], "first line")
+                self.assertEqual(tv_menu.settings_update_terminal_partial_line, "second")
+                offset = tv_menu.settings_update_terminal_log_offset
+                tv_menu._settings_refresh_update_terminal(force=True)
+                self.assertEqual(tv_menu.settings_update_terminal_log_offset, offset)
+                self.assertEqual(tv_menu.settings_update_terminal_lines.count("first line"), 1)
+                with open(log_path, "a", encoding="utf-8") as handle:
+                    handle.write(" line\nthird line\n")
+                tv_menu._settings_refresh_update_terminal(force=True)
+
+            self.assertIn("second line", tv_menu.settings_update_terminal_lines)
+            self.assertIn("third line", tv_menu.settings_update_terminal_lines)
+            self.assertEqual(tv_menu.settings_update_terminal_partial_line, "")
 
 
 class SettingsUpdateActionTests(unittest.TestCase):

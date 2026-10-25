@@ -293,6 +293,9 @@ settings_update_terminal_last_refresh = 0.0
 settings_update_terminal_started_at = 0.0
 settings_update_terminal_launch_error = ""
 settings_update_terminal_status = {"status": "idle", "message": "No update has run yet", "branch": ""}
+settings_update_terminal_log_offset = 0
+settings_update_terminal_log_identity = None
+settings_update_terminal_partial_line = ""
 
 active_art_type     = None
 art_stop_time       = None
@@ -4426,7 +4429,7 @@ def _settings_complete_authorisation():
     settings_auth_entered = ""
     if pitv_secrets.is_default_emergency_code():
         settings_page = "SYSTEM"
-        settings_selected = 6  # Change admin code
+        settings_selected = 7  # Change admin code; updater terminal added one item
         current_view = "SETTINGS"
         _settings_set_message(
             "Set a private admin code before using protected Settings."
@@ -4596,61 +4599,101 @@ def _settings_refresh_logs():
     settings_log_scroll = max(0, len(safe)-18)
 
 
+def _settings_append_terminal_lines(raw_lines):
+    """Wrap only new transcript lines instead of rebuilding thousands of old rows."""
+    global settings_update_terminal_lines
+    wrapped_lines = []
+    for raw in raw_lines:
+        line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(raw)).expandtabs(4).rstrip()
+        if not line:
+            wrapped_lines.append("")
+            continue
+        wrapped_lines.extend(textwrap.wrap(
+            line, width=UPDATE_TERMINAL_COLUMNS, replace_whitespace=False,
+            drop_whitespace=False, break_long_words=True, break_on_hyphens=False,
+        ) or [""])
+    if wrapped_lines:
+        settings_update_terminal_lines = (settings_update_terminal_lines + wrapped_lines)[-5000:]
+
+
 def _settings_refresh_update_terminal(force=False):
-    """Tail the real update.sh stdout/stderr without blocking the menu loop."""
+    """Incrementally tail the updater's real output without blocking the menu loop."""
     global settings_update_terminal_lines, settings_update_terminal_scroll
     global settings_update_terminal_follow, settings_update_terminal_last_refresh
-    global settings_update_terminal_status
+    global settings_update_terminal_status, settings_update_terminal_log_offset
+    global settings_update_terminal_log_identity, settings_update_terminal_partial_line
     now = time.monotonic()
     if not force and now - settings_update_terminal_last_refresh < UPDATE_TERMINAL_REFRESH_INTERVAL:
         return
     settings_update_terminal_last_refresh = now
-    status = _settings_maintenance_status()
-    settings_update_terminal_status = status
+    settings_update_terminal_status = _settings_maintenance_status()
     try:
-        updated_at = int(status.get("updated_at", 0) or 0)
+        updated_at = int(settings_update_terminal_status.get("updated_at", 0) or 0)
     except (TypeError, ValueError):
         updated_at = 0
 
-    # A new request may still be waiting for the root helper to truncate the
-    # previous transcript. Do not flash old output while that hand-off happens.
     is_old_status = (
         settings_update_terminal_started_at > 0
         and updated_at < int(settings_update_terminal_started_at)
     )
-    raw_lines = []
     if is_old_status:
-        raw_lines = ["Starting the standard PiTV updater..."]
+        if not settings_update_terminal_lines:
+            settings_update_terminal_lines = ["Starting the standard PiTV updater..."]
     else:
         try:
-            with open(UPDATE_TERMINAL_LOG_PATH, "r", encoding="utf-8", errors="replace") as handle:
-                handle.seek(0, os.SEEK_END)
-                size = handle.tell()
-                start = max(0, size - 262144)
-                handle.seek(start)
-                data = handle.read()
-            if start and "\n" in data:
-                data = data.split("\n", 1)[1]
-            raw_lines = data.replace("\r", "\n").splitlines()
+            with open(UPDATE_TERMINAL_LOG_PATH, "rb") as handle:
+                stat = os.fstat(handle.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                size = stat.st_size
+                changed_file = (
+                    settings_update_terminal_log_identity is not None
+                    and identity != settings_update_terminal_log_identity
+                )
+                truncated = size < settings_update_terminal_log_offset
+                if changed_file or truncated:
+                    settings_update_terminal_lines = []
+                    settings_update_terminal_partial_line = ""
+                    settings_update_terminal_log_offset = 0
+                elif settings_update_terminal_log_identity is None and settings_update_terminal_started_at <= 0:
+                    # Reopening an existing transcript after hiding it or after
+                    # a menu-service restart: load its current tail once.
+                    settings_update_terminal_lines = []
+                    settings_update_terminal_partial_line = ""
+
+                settings_update_terminal_log_identity = identity
+                if settings_update_terminal_log_offset == 0 and size > 262144:
+                    start = size - 262144
+                    handle.seek(start)
+                    data = handle.read()
+                    if b"\n" in data:
+                        data = data.split(b"\n", 1)[1]
+                    settings_update_terminal_log_offset = size
+                    settings_update_terminal_partial_line = ""
+                else:
+                    handle.seek(settings_update_terminal_log_offset)
+                    data = handle.read(65536)
+                    settings_update_terminal_log_offset = handle.tell()
+
+            if data:
+                decoded = data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+                combined = settings_update_terminal_partial_line + decoded
+                fragments = combined.split("\n")
+                if combined.endswith("\n"):
+                    complete, settings_update_terminal_partial_line = fragments[:-1], ""
+                else:
+                    complete, settings_update_terminal_partial_line = fragments[:-1], fragments[-1]
+                _settings_append_terminal_lines(complete)
         except OSError:
-            raw_lines = []
+            pass
 
-    if not raw_lines:
-        raw_lines = [str(status.get("message", "") or "Waiting for update output...")]
+    if not settings_update_terminal_lines:
+        message = str(settings_update_terminal_status.get("message", "") or "Waiting for update output...")
+        settings_update_terminal_lines = [message]
     if settings_update_terminal_launch_error:
-        raw_lines.extend(["", "ERROR: " + settings_update_terminal_launch_error])
-
-    lines = []
-    for raw in raw_lines:
-        line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(raw)).expandtabs(4).rstrip()
-        if not line:
-            lines.append("")
-            continue
-        lines.extend(textwrap.wrap(
-            line, width=UPDATE_TERMINAL_COLUMNS, replace_whitespace=False,
-            drop_whitespace=False, break_long_words=True, break_on_hyphens=False,
-        ) or [""])
-    settings_update_terminal_lines = lines[-5000:]
+        error_line = "ERROR: " + settings_update_terminal_launch_error
+        if error_line not in settings_update_terminal_lines:
+            settings_update_terminal_lines.extend(["", error_line])
+            settings_update_terminal_lines = settings_update_terminal_lines[-5000:]
 
     max_scroll = max(0, len(settings_update_terminal_lines) - UPDATE_TERMINAL_VISIBLE_ROWS)
     if settings_update_terminal_follow:
@@ -4665,6 +4708,8 @@ def _settings_show_update_terminal(*, new_request=False):
     global settings_update_terminal_scroll, settings_update_terminal_follow
     global settings_update_terminal_last_refresh, settings_update_terminal_started_at
     global settings_update_terminal_launch_error, settings_update_terminal_lines
+    global settings_update_terminal_log_offset, settings_update_terminal_log_identity
+    global settings_update_terminal_partial_line
     settings_page = "SYSTEM"
     settings_selected = 2  # View updater terminal
     current_view = "UPDATE_TERMINAL"
@@ -4675,6 +4720,9 @@ def _settings_show_update_terminal(*, new_request=False):
     if new_request:
         settings_update_terminal_started_at = time.time()
         settings_update_terminal_lines = ["Starting the standard PiTV updater..."]
+        settings_update_terminal_log_offset = 0
+        settings_update_terminal_log_identity = None
+        settings_update_terminal_partial_line = ""
     else:
         settings_update_terminal_started_at = 0.0
         _settings_refresh_update_terminal(force=True)
