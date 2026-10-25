@@ -1609,16 +1609,19 @@ def run_imposter(stdscr,players: list[str]) -> None:
                                     "error_message": "PiTV could not create a real QR image.",
                                     "join_url": url}, "QR IMAGE GENERATION ERROR",
                                     ["PiTV could not create a QR image.", url])
-                elif phase=="choose_word":
+                elif phase in ("choose_category", "choose_word"):
+                    selection_stage = "category" if phase == "choose_category" else "word"
                     _imposter_render_screen({
                         "view": "IMPOSTER_WORD",
+                        "selection_stage": selection_stage,
                         "word_picker": state.get("word_picker", ""),
                         "players": [p.get("name", "") for p in state.get("players", [])],
                         "round_number": int(state.get("round_number", 1) or 1),
                     }, "IMPOSTER", [
                         "All players are connected.",
-                        "The word is being chosen on a phone.",
-                        "The imposter does not receive the word.",
+                        "The word chooser is selecting a category." if phase == "choose_category"
+                        else "The word chooser is selecting a word from that category.",
+                        "The imposter receives only the category, never the word.",
                     ])
                 elif phase=="round":
                     names=[str(p.get("name", "")) for p in state.get("players",[])]
