@@ -245,6 +245,29 @@ def cmd_interface(args):
     print("This only restarts the PiTV menu service; it does not reboot the Pi.")
 
 
+
+def cmd_carousel(args):
+    """Read or change the persisted home-carousel autoplay setting."""
+    if args[:1] != ["autoplay"] or len(args) > 2:
+        print("Usage: screen settings carousel autoplay <on|off|status>", file=sys.stderr)
+        sys.exit(2)
+    choice = args[1].lower() if len(args) == 2 else "status"
+    if choice in ("status", "show"):
+        enabled = bool(pitv_state.read_value("CAROUSEL_AUTOPLAY", True))
+        print("Carousel autoplay: " + ("ON" if enabled else "OFF"))
+        return
+    if choice not in ("on", "off"):
+        print("Usage: screen settings carousel autoplay <on|off|status>", file=sys.stderr)
+        sys.exit(2)
+    try:
+        pitv_state.write_value("CAROUSEL_AUTOPLAY", choice == "on")
+    except Exception as exc:
+        print(f"Could not save carousel autoplay: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print("Carousel autoplay " + ("enabled." if choice == "on" else "disabled."))
+
+
+
 def main():
     args = sys.argv[1:]
     cmd = args[0] if args else ""
@@ -256,6 +279,8 @@ def main():
         cmd_network(args[1:])
     elif cmd == "interface":
         cmd_interface(args[1:])
+    elif cmd == "carousel":
+        cmd_carousel(args[1:])
     else:
         print("Usage: pitv-config.py <sky|control|network|interface> ...")
         sys.exit(1)
