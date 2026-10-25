@@ -4983,6 +4983,30 @@ def _settings_select_action(item):
 
 
 
+
+def _settings_safe_select(item):
+    """Keep device-state or subprocess errors from taking down the menu loop."""
+    try:
+        _settings_select_action(item)
+    except Exception as exc:
+        log(f"Settings action failed: {type(exc).__name__}: {exc}")
+        _settings_set_message(
+            f"Settings action failed ({type(exc).__name__}). Check Logs for details."
+        )
+
+
+def _settings_safe_submit_input():
+    """Handle input submission failures without losing the working menu."""
+    try:
+        _settings_submit_input()
+    except Exception as exc:
+        log(f"Settings input submission failed: {type(exc).__name__}: {exc}")
+        _settings_set_message(
+            f"Settings input failed ({type(exc).__name__}). Check Logs for details."
+        )
+
+
+
 def _activate_home_selection(stdscr):
     global current_view
     _label, art_type, art_key = ART_OPTIONS[selected_art_idx]
@@ -5318,12 +5342,12 @@ def main(stdscr):
                     settings_selected = 1-settings_selected
                 elif cmd == "BACK":
                     items = _settings_current_items()
-                    _settings_select_action(("Back", "", "", "BACK"))
+                    _settings_safe_select(("Back", "", "", "BACK"))
                 elif cmd == "SELECT":
                     items = _settings_current_items()
                     if items:
                         settings_selected = max(0, min(settings_selected, len(items)-1))
-                        _settings_select_action(items[settings_selected])
+                        _settings_safe_select(items[settings_selected])
 
             elif current_view == "SETTINGS_AUTH":
                 keypad_layout = [["1","2","3"],["4","5","6"],["7","8","9"],["DEL","0","OK"]]
@@ -5387,7 +5411,7 @@ def main(stdscr):
                     if key in ("DEL", "<"):
                         settings_text = settings_text[:-1]
                     elif key in ("OK", "DONE"):
-                        _settings_submit_input()
+                        _settings_safe_submit_input()
                     elif key == "CASE":
                         settings_input_lowercase = not settings_input_lowercase
                     elif key == "_":
