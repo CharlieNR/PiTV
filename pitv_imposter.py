@@ -210,8 +210,8 @@ def rewind_turn(game_id):
         if not players:
             return {"ok": False, "error": "no_players"}
         if s.get("phase") in ("round_complete", "vote"):
-            # Back can undo the final player's advance, including the automatic
-            # transition into voting after the third clue round.
+            # Back can undo the final player's advance even after the host has
+            # opened voting, returning the group to the last player's clue turn.
             if s.get("phase") == "vote":
                 s["votes"], s["results"] = {}, []
                 for player in players:
