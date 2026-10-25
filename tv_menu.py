@@ -12,7 +12,6 @@ import selectors
 import shutil
 import subprocess
 import threading
-import textwrap
 import time
 import traceback
 
@@ -281,21 +280,6 @@ settings_log_lines = []
 settings_log_scroll = 0
 settings_busy = ""
 settings_task_lock = threading.Lock()
-
-UPDATE_TERMINAL_LOG_PATH = "/tmp/pitv-settings-update.log"
-UPDATE_TERMINAL_VISIBLE_ROWS = 32
-UPDATE_TERMINAL_COLUMNS = 142
-UPDATE_TERMINAL_REFRESH_INTERVAL = 0.15
-settings_update_terminal_lines = []
-settings_update_terminal_scroll = 0
-settings_update_terminal_follow = True
-settings_update_terminal_last_refresh = 0.0
-settings_update_terminal_started_at = 0.0
-settings_update_terminal_launch_error = ""
-settings_update_terminal_status = {"status": "idle", "message": "No update has run yet", "branch": ""}
-settings_update_terminal_log_offset = 0
-settings_update_terminal_log_identity = None
-settings_update_terminal_partial_line = ""
 
 active_art_type     = None
 art_stop_time       = None
@@ -4421,48 +4405,6 @@ def _settings_maintenance_status():
         return {"status": "idle", "message": "No maintenance task this boot"}
 
 
-def _settings_update_worker_active():
-    """Return True only while a detached PiTV update systemd unit is active."""
-    try:
-        result = subprocess.run(
-            [
-                "/usr/bin/systemctl", "list-units", "--all", "--type=service",
-                "--no-legend", "pitv-update-*.service",
-            ],
-            capture_output=True, text=True, timeout=3, check=False,
-        )
-    except Exception as exc:
-        # Renderer startup must not fail because updater status could not be read.
-        log(f"Could not confirm active PiTV updater: {type(exc).__name__}")
-        return False
-
-    if result.returncode:
-        log("Could not confirm active PiTV updater; leaving normal UI startup unchanged.")
-        return False
-
-    active_states = {"active", "activating", "reloading", "deactivating"}
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if (
-            len(fields) >= 4
-            and fields[0].startswith("pitv-update-")
-            and fields[2] in active_states
-        ):
-            return True
-    return False
-
-
-def _settings_should_resume_update_terminal():
-    """Resume the transcript only if both status and a live worker agree."""
-    status = _settings_maintenance_status()
-    if (
-        status.get("status") not in {"queued", "running"}
-        or status.get("branch") not in {"experimental", "main"}
-    ):
-        return False
-    return _settings_update_worker_active()
-
-
 def _settings_complete_authorisation():
     """Keep the published default code from authorising administrative actions."""
     global settings_authorized_until, settings_auth_entered, settings_page
@@ -4471,7 +4413,7 @@ def _settings_complete_authorisation():
     settings_auth_entered = ""
     if pitv_secrets.is_default_emergency_code():
         settings_page = "SYSTEM"
-        settings_selected = 7  # Change admin code; updater terminal added one item
+        settings_selected = 6  # Change admin code
         current_view = "SETTINGS"
         _settings_set_message(
             "Set a private admin code before using protected Settings."
@@ -4569,9 +4511,8 @@ def _settings_current_items():
             ("Installed version", VERSION, "Version of the currently running menu", "SHOW_VERSION"),
             ("Maintenance status", str(maintenance.get("status", "idle")).upper(),
              str(maintenance.get("message", "No maintenance task this boot")), "MAINT_STATUS"),
-            ("View updater terminal", "", "Show the real update.sh output; running updates continue in the background", "VIEW_UPDATE_TERMINAL"),
-            ("Update experimental", "", "Run the standard experimental updater in a live terminal", "UPDATE_EXPERIMENTAL"),
-            ("Update stable / main", "", "Run the standard main updater in a live terminal", "UPDATE_STABLE"),
+            ("Update experimental", "", "Back up settings and update from experimental", "CONFIRM_UPDATE_EXPERIMENTAL"),
+            ("Update stable / main", "", "Back up settings and update from main", "CONFIRM_UPDATE_STABLE"),
             ("Restart PiTV menu", "", "Restart only the menu service", "CONFIRM_RESTART_MENU"),
             ("Reboot Raspberry Pi", "", "Restart the entire device", "CONFIRM_REBOOT"),
             ("Change admin code", "", "Replace the six-digit Settings authorisation code", "CHANGE_EMERGENCY_CODE"),
@@ -4641,139 +4582,9 @@ def _settings_refresh_logs():
     settings_log_scroll = max(0, len(safe)-18)
 
 
-def _settings_append_terminal_lines(raw_lines):
-    """Wrap only new transcript lines instead of rebuilding thousands of old rows."""
-    global settings_update_terminal_lines
-    wrapped_lines = []
-    for raw in raw_lines:
-        line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(raw)).expandtabs(4).rstrip()
-        if not line:
-            wrapped_lines.append("")
-            continue
-        wrapped_lines.extend(textwrap.wrap(
-            line, width=UPDATE_TERMINAL_COLUMNS, replace_whitespace=False,
-            drop_whitespace=False, break_long_words=True, break_on_hyphens=False,
-        ) or [""])
-    if wrapped_lines:
-        settings_update_terminal_lines = (settings_update_terminal_lines + wrapped_lines)[-5000:]
-
-
-def _settings_refresh_update_terminal(force=False):
-    """Incrementally tail the updater's real output without blocking the menu loop."""
-    global settings_update_terminal_lines, settings_update_terminal_scroll
-    global settings_update_terminal_follow, settings_update_terminal_last_refresh
-    global settings_update_terminal_status, settings_update_terminal_log_offset
-    global settings_update_terminal_log_identity, settings_update_terminal_partial_line
-    now = time.monotonic()
-    if not force and now - settings_update_terminal_last_refresh < UPDATE_TERMINAL_REFRESH_INTERVAL:
-        return
-    settings_update_terminal_last_refresh = now
-    settings_update_terminal_status = _settings_maintenance_status()
-    try:
-        updated_at = int(settings_update_terminal_status.get("updated_at", 0) or 0)
-    except (TypeError, ValueError):
-        updated_at = 0
-
-    is_old_status = (
-        settings_update_terminal_started_at > 0
-        and updated_at < int(settings_update_terminal_started_at)
-    )
-    if is_old_status:
-        if not settings_update_terminal_lines:
-            settings_update_terminal_lines = ["Starting the standard PiTV updater..."]
-    else:
-        try:
-            with open(UPDATE_TERMINAL_LOG_PATH, "rb") as handle:
-                stat = os.fstat(handle.fileno())
-                identity = (stat.st_dev, stat.st_ino)
-                size = stat.st_size
-                changed_file = (
-                    settings_update_terminal_log_identity is not None
-                    and identity != settings_update_terminal_log_identity
-                )
-                truncated = size < settings_update_terminal_log_offset
-                if changed_file or truncated:
-                    settings_update_terminal_lines = []
-                    settings_update_terminal_partial_line = ""
-                    settings_update_terminal_log_offset = 0
-                elif settings_update_terminal_log_identity is None and settings_update_terminal_started_at <= 0:
-                    # Reopening an existing transcript after hiding it or after
-                    # a menu-service restart: load its current tail once.
-                    settings_update_terminal_lines = []
-                    settings_update_terminal_partial_line = ""
-
-                settings_update_terminal_log_identity = identity
-                if settings_update_terminal_log_offset == 0 and size > 262144:
-                    start = size - 262144
-                    handle.seek(start)
-                    data = handle.read()
-                    if b"\n" in data:
-                        data = data.split(b"\n", 1)[1]
-                    settings_update_terminal_log_offset = size
-                    settings_update_terminal_partial_line = ""
-                else:
-                    handle.seek(settings_update_terminal_log_offset)
-                    data = handle.read(65536)
-                    settings_update_terminal_log_offset = handle.tell()
-
-            if data:
-                decoded = data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
-                combined = settings_update_terminal_partial_line + decoded
-                fragments = combined.split("\n")
-                if combined.endswith("\n"):
-                    complete, settings_update_terminal_partial_line = fragments[:-1], ""
-                else:
-                    complete, settings_update_terminal_partial_line = fragments[:-1], fragments[-1]
-                _settings_append_terminal_lines(complete)
-        except OSError:
-            pass
-
-    if not settings_update_terminal_lines:
-        message = str(settings_update_terminal_status.get("message", "") or "Waiting for update output...")
-        settings_update_terminal_lines = [message]
-    if settings_update_terminal_launch_error:
-        error_line = "ERROR: " + settings_update_terminal_launch_error
-        if error_line not in settings_update_terminal_lines:
-            settings_update_terminal_lines.extend(["", error_line])
-            settings_update_terminal_lines = settings_update_terminal_lines[-5000:]
-
-    max_scroll = max(0, len(settings_update_terminal_lines) - UPDATE_TERMINAL_VISIBLE_ROWS)
-    if settings_update_terminal_follow:
-        settings_update_terminal_scroll = max_scroll
-    else:
-        settings_update_terminal_scroll = max(0, min(settings_update_terminal_scroll, max_scroll))
-
-
-def _settings_show_update_terminal(*, new_request=False):
-    """Open the plain updater terminal; hiding it never stops the update."""
-    global current_view, settings_page, settings_selected
-    global settings_update_terminal_scroll, settings_update_terminal_follow
-    global settings_update_terminal_last_refresh, settings_update_terminal_started_at
-    global settings_update_terminal_launch_error, settings_update_terminal_lines
-    global settings_update_terminal_log_offset, settings_update_terminal_log_identity
-    global settings_update_terminal_partial_line
-    settings_page = "SYSTEM"
-    settings_selected = 2  # View updater terminal
-    current_view = "UPDATE_TERMINAL"
-    settings_update_terminal_scroll = 0
-    settings_update_terminal_follow = True
-    settings_update_terminal_last_refresh = 0.0
-    settings_update_terminal_launch_error = ""
-    if new_request:
-        settings_update_terminal_started_at = time.time()
-        settings_update_terminal_lines = ["Starting the standard PiTV updater..."]
-        settings_update_terminal_log_offset = 0
-        settings_update_terminal_log_identity = None
-        settings_update_terminal_partial_line = ""
-    else:
-        settings_update_terminal_started_at = 0.0
-        _settings_refresh_update_terminal(force=True)
-
-
 def _settings_start_maintenance(action, branch=None):
-    """Launch a whitelisted maintenance action, exposing updater output as a terminal."""
-    is_update = action == "update" and branch in ("experimental", "main")
-    if is_update:
+    """Request a fixed, whitelisted maintenance action through PiTV's root helper."""
+    if action == "update" and branch in ("experimental", "main"):
         args = ["update", branch]
         label = f"Update from {branch}"
     elif action == "restart-menu":
@@ -4787,56 +4598,25 @@ def _settings_start_maintenance(action, branch=None):
         return False
 
     def worker():
-        global settings_update_terminal_launch_error
         command = ["/usr/bin/sudo", "-n", "/usr/local/sbin/pitv-maintenance"] + args
         try:
             result = subprocess.run(command, capture_output=True, text=True,
                                     stdin=subprocess.DEVNULL, timeout=20, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            message = f"{label} could not start: {type(exc).__name__}. Run deploy.sh to install maintenance support."
-            _settings_set_message(message)
-            if is_update:
-                settings_update_terminal_launch_error = message
+            _settings_set_message(
+                f"{label} could not start: {type(exc).__name__}. Run deploy.sh to install maintenance support."
+            )
             log(f"Settings maintenance launch failed: {type(exc).__name__}")
             return
         if result.returncode:
-            detail = (result.stderr or result.stdout or "").strip()
-            message = f"Update request failed: {detail[-130:]}" if is_update and detail else (
+            _settings_set_message(
                 "Maintenance request failed. Check Settings → Logs or deploy the latest experimental branch."
             )
-            _settings_set_message(message)
-            if is_update:
-                settings_update_terminal_launch_error = detail or message
             log(f"Settings maintenance request failed ({action}, exit {result.returncode}).")
             return
-        _settings_set_message(f"{label} queued.", 20)
+        _settings_set_message(f"{label} queued. See Maintenance status for progress.", 20)
         log(f"Settings requested {label}.")
-
-    if not is_update:
-        return _settings_start_task(label, worker)
-
-    global settings_busy
-    with settings_task_lock:
-        if settings_busy:
-            _settings_set_message(f"Busy: {settings_busy}. Please wait.")
-            return False
-        settings_busy = label
-    _settings_show_update_terminal(new_request=True)
-
-    def run_update_request():
-        global settings_busy, settings_update_terminal_launch_error
-        try:
-            worker()
-        except Exception as exc:
-            settings_update_terminal_launch_error = f"{type(exc).__name__}: {exc}"
-            _settings_set_message(f"{label} failed to start: {type(exc).__name__}.")
-            log(f"Settings update launch exception: {type(exc).__name__}")
-        finally:
-            with settings_task_lock:
-                settings_busy = ""
-
-    threading.Thread(target=run_update_request, name="pitv-settings-update-request", daemon=True).start()
-    return True
+    return _settings_start_task(label, worker)
 
 
 def _settings_start_task(label, worker):
@@ -5215,7 +4995,7 @@ def _settings_select_action(item):
             and settings_page in _SETTINGS_PROTECTED_PAGES
             and action not in ("CHANGE_EMERGENCY_CODE", "SHOW_VERSION", "MAINT_STATUS", "BACK", "BACK_HOME")):
         settings_page = "SYSTEM"
-        settings_selected = 7  # Change admin code; updater terminal added one item
+        settings_selected = 6  # Change admin code
         current_view = "SETTINGS"
         _settings_set_message("Set a private admin code before using protected Settings.")
         return
@@ -5306,12 +5086,10 @@ def _settings_select_action(item):
         _settings_set_message(
             f"{str(status.get('status', 'idle')).upper()}: {status.get('message', 'No maintenance task this boot')}"
         )
-    elif action == "VIEW_UPDATE_TERMINAL":
-        _settings_show_update_terminal()
-    elif action in ("CONFIRM_UPDATE_EXPERIMENTAL", "UPDATE_EXPERIMENTAL"):
-        _settings_start_maintenance("update", "experimental")
-    elif action in ("CONFIRM_UPDATE_STABLE", "UPDATE_STABLE"):
-        _settings_start_maintenance("update", "main")
+    elif action == "CONFIRM_UPDATE_EXPERIMENTAL":
+        _settings_begin_confirmation("UPDATE_EXPERIMENTAL", "Update from experimental? Settings will be backed up.")
+    elif action == "CONFIRM_UPDATE_STABLE":
+        _settings_begin_confirmation("UPDATE_STABLE", "Update from stable/main? Settings will be backed up.")
     elif action == "CONFIRM_RESTART_MENU":
         _settings_begin_confirmation("RESTART_MENU", "Restart the PiTV menu service?")
     elif action == "CONFIRM_REBOOT":
@@ -5425,9 +5203,9 @@ def main(stdscr):
     except curses.error:
         pass
 
-    # Keep V2 renderer import, framebuffer reset and cache warm-up identical on
-    # every boot. In particular, never bypass normal UI initialization just
-    # because a recent maintenance status file says an update was running.
+    # Version 2 starts on a clean framebuffer. Warm first-use fonts, icons,
+    # shortcut artwork and carousel sizes before showing the first frame; if
+    # V2 is unavailable, stay blank and retry it instead of showing curses UI.
     if UI_VERSION == "2":
         try:
             pitv_framebuffer.clear_framebuffer()
@@ -5457,16 +5235,6 @@ def main(stdscr):
                 log(f"V2 startup warm-up failed; renderer will retry normally: {type(exc).__name__}: {exc}")
         else:
             _wait_for_v2_renderer()
-
-    # Resume the terminal only after ordinary UI startup, and only if systemd
-    # confirms that the detached updater is still alive. A stale JSON status
-    # alone must never trap PiTV on the updater screen after reboot.
-    if _settings_should_resume_update_terminal():
-        settings_page = "SYSTEM"
-        current_view = "UPDATE_TERMINAL"
-        settings_update_terminal_follow = True
-        settings_update_terminal_started_at = 0.0
-        _settings_refresh_update_terminal(force=True)
 
     frame       = 0
     last_view   = None
@@ -5506,14 +5274,7 @@ def main(stdscr):
 
         if tv_power_sleeping:
             tv_power_sleeping = False
-            if _settings_should_resume_update_terminal():
-                settings_page = "SYSTEM"
-                current_view = "UPDATE_TERMINAL"
-                settings_update_terminal_started_at = 0.0
-                settings_update_terminal_follow = True
-                _settings_refresh_update_terminal(force=True)
-            else:
-                current_view = "MENU"
+            current_view = "MENU"
             fake_off_active = False
             force_home_requested = False
             active_art_type = None
@@ -5526,9 +5287,6 @@ def main(stdscr):
         elif tv_power_state == "on" and tv_ui_state != "active":
             # Startup can begin with the TV already on, before a sleep transition.
             _set_tv_ui_state("active")
-
-        if current_view == "UPDATE_TERMINAL":
-            _settings_refresh_update_terminal()
 
         if settings_message and settings_message_until and time.monotonic() >= settings_message_until:
             settings_message = ""
@@ -5878,26 +5636,6 @@ def main(stdscr):
                         max_length = 6 if settings_input_mode == "pin" else 40
                         if len(settings_text) < max_length:
                             settings_text += key.lower() if settings_input_lowercase and key.isalpha() else key
-
-            elif current_view == "UPDATE_TERMINAL":
-                _settings_refresh_update_terminal()
-                if cmd == "UP":
-                    settings_update_terminal_follow = False
-                    settings_update_terminal_scroll = max(0, settings_update_terminal_scroll-1)
-                elif cmd == "DOWN":
-                    max_scroll = max(0, len(settings_update_terminal_lines)-UPDATE_TERMINAL_VISIBLE_ROWS)
-                    settings_update_terminal_scroll = min(max_scroll, settings_update_terminal_scroll+1)
-                    settings_update_terminal_follow = settings_update_terminal_scroll >= max_scroll
-                elif cmd in ("SELECT", "RIGHT"):
-                    settings_update_terminal_follow = True
-                    settings_update_terminal_scroll = max(
-                        0, len(settings_update_terminal_lines)-UPDATE_TERMINAL_VISIBLE_ROWS
-                    )
-                elif cmd in ("BACK", "LEFT"):
-                    current_view = "SETTINGS"
-                    settings_page = "SYSTEM"
-                    settings_selected = 2
-                    _settings_set_message("The updater continues in the background; open View updater terminal to return.")
 
             elif current_view == "SETTINGS_LOG":
                 if cmd == "UP":
@@ -6331,14 +6069,6 @@ def main(stdscr):
                     "settings_text": settings_text,
                     "settings_log_lines": settings_log_lines,
                     "settings_log_scroll": settings_log_scroll,
-                    "update_terminal_lines": settings_update_terminal_lines,
-                    "update_terminal_scroll": settings_update_terminal_scroll,
-                    "update_terminal_status": settings_update_terminal_status,
-                    "update_terminal_prompt": (
-                        f"{os.environ.get('USER', 'pi')}@{os.uname().nodename}:~/PiTV $ "
-                        + ("screen update" if settings_update_terminal_status.get("branch") == "experimental"
-                           else "screen update safe")
-                    ),
                     "ttt_selected": ttt_sel,
                     "imposter_counts": list(imposter_count_options),
                     "imposter_count_index": imposter_count_selected,

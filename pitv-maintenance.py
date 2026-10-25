@@ -24,7 +24,6 @@ from pathlib import Path
 CONFIG_PATH = Path("/etc/pitv/maintenance.json")
 STATUS_PATH = Path("/tmp/pitv-maintenance-status.json")
 LOG_PATH = Path("/tmp/pitv-settings-maintenance.log")
-UPDATE_OUTPUT_PATH = Path("/tmp/pitv-settings-update.log")
 CONTROL_KEY_PATH = Path("/etc/pitv/control.key")
 RUNNER_PATH = Path("/usr/local/lib/pitv/deploy-runner.sh")
 HELPER_PATH = Path("/usr/local/sbin/pitv-maintenance")
@@ -55,23 +54,6 @@ def _append_log(message: str) -> None:
                 os.close(fd)
             except OSError:
                 pass
-
-
-def _open_update_output(*, append: bool):
-    """Open the shared updater transcript without following symlinks in /tmp."""
-    flags = os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
-    flags |= os.O_APPEND if append else os.O_TRUNC
-    fd = os.open(str(UPDATE_OUTPUT_PATH), flags, 0o644)
-    os.fchmod(fd, 0o644)
-    return os.fdopen(fd, "a" if append else "w", encoding="utf-8", errors="replace")
-
-
-def _append_update_output(message: str) -> None:
-    with _open_update_output(append=True) as output:
-        output.write(str(message))
-        if not str(message).endswith("\n"):
-            output.write("\n")
-        output.flush()
 
 
 def _write_status(status: str, message: str, branch: str = "") -> None:
@@ -229,13 +211,15 @@ def _backup_state(config: dict, branch: str) -> str:
     return str(destination)
 
 
-def _backup_shared_control_key(config: dict, branch: str, updater_output: str) -> str:
-    """Copy the privileged shared key into the exact private backup made by update.sh."""
-    matches = re.findall(r"(?m)^Private settings backup:\s*(.+?)\s*$", updater_output)
+def _backup_shared_control_key(config: dict, branch: str, update_output: str) -> str:
+    """Add the privileged control key to the backup created by update.sh."""
+    matches = [
+        line.partition(":")[2].strip()
+        for line in update_output.splitlines()
+        if line.startswith("Private settings backup:")
+    ]
     if not matches:
-        raise RuntimeError(
-            "update.sh did not report its settings backup directory; refusing to deploy without a key backup."
-        )
+        raise RuntimeError("update.sh did not report its private settings backup location.")
 
     backup_dir = Path(matches[-1])
     expected_root = Path(config["home"]) / "pitv-update-backups"
@@ -246,9 +230,13 @@ def _backup_shared_control_key(config: dict, branch: str, updater_output: str) -
         backup_resolved = backup_dir.resolve(strict=True)
     except OSError as exc:
         raise RuntimeError("The private backup directory could not be verified.") from exc
-    if (backup_resolved.parent != root_resolved or not backup_resolved.is_dir()
-            or not backup_resolved.name.endswith("-" + branch)):
-        raise RuntimeError("The update.sh backup directory is outside the expected private backup root.")
+    if (
+        backup_resolved.parent != root_resolved
+        or not backup_resolved.is_dir()
+        or not backup_resolved.name.endswith("-" + branch)
+    ):
+        raise RuntimeError("The update.sh backup is outside the expected private backup directory.")
+
     if not CONTROL_KEY_PATH.exists():
         return "No shared control.key exists; no key copy was needed."
     if CONTROL_KEY_PATH.is_symlink() or not CONTROL_KEY_PATH.is_file():
@@ -256,6 +244,7 @@ def _backup_shared_control_key(config: dict, branch: str, updater_output: str) -
     key_copy = backup_resolved / "control.key"
     if key_copy.exists() or key_copy.is_symlink():
         raise RuntimeError("The control.key backup destination already exists.")
+
     account = pwd.getpwnam(config["user"])
     shutil.copy2(CONTROL_KEY_PATH, key_copy)
     os.chown(key_copy, account.pw_uid, account.pw_gid)
@@ -264,7 +253,7 @@ def _backup_shared_control_key(config: dict, branch: str, updater_output: str) -
 
 
 def _standard_update_command(config: dict, branch: str) -> list[str]:
-    """Build the same update.sh invocation used by `screen update`."""
+    """Build the same update.sh workflow used by screen update."""
     if branch not in ALLOWED_BRANCHES:
         raise RuntimeError("Only experimental and main branches are permitted.")
     return [
@@ -274,9 +263,8 @@ def _standard_update_command(config: dict, branch: str) -> list[str]:
         f"USER={config['user']}",
         f"LOGNAME={config['user']}",
         "GIT_TERMINAL_PROMPT=0",
-        # TV Settings has no interactive OS-password/reboot prompt. The root
-        # worker backs up control.key into update.sh's own settings backup, and
-        # performs deploy.sh after the regular user-owned Git update completes.
+        # Settings cannot answer an OS sudo or reboot prompt. The root worker
+        # performs these two privileged steps around the normal update.sh run.
         "PITV_SKIP_REBOOT_PROMPT=1",
         "PITV_SKIP_CONTROL_KEY_BACKUP=1",
         "PITV_DEFER_DEPLOY=1",
@@ -287,16 +275,18 @@ def _standard_update_command(config: dict, branch: str) -> list[str]:
 def _update_worker(branch: str) -> int:
     if os.geteuid() != 0:
         raise RuntimeError("The update worker must run as root inside its transient systemd unit.")
-    # This worker is detached from pitv-menu.service, which deploy.sh restarts.
+    # systemd sets INVOCATION_ID. This prevents invoking the long-running
+    # worker directly inside pitv-menu.service, which deployment restarts.
     if not re.fullmatch(r"[0-9a-f]{32}", os.environ.get("INVOCATION_ID", "")):
         raise RuntimeError("Update workers may only run as detached systemd tasks.")
     if branch not in ALLOWED_BRANCHES:
         raise RuntimeError("Only experimental and main branches are permitted.")
+
     config = _read_config()
     repo = config["repo"]
-
-    _write_status("running", f"Starting the standard update script for {branch}.", branch)
+    _write_status("running", f"Running the standard update.sh workflow for {branch}.", branch)
     _append_log(f"Starting standard update.sh workflow for branch {branch}.")
+
     origin = _git_checked(config, ["remote", "get-url", "origin"], "Checking repository origin").strip()
     trusted_origins = {
         "https://github.com/charlienr/pitv",
@@ -306,80 +296,65 @@ def _update_worker(branch: str) -> int:
     }
     if origin.rstrip("/").lower() not in trusted_origins:
         raise RuntimeError("Refusing update: origin must be the official CharlieNR/PiTV GitHub repository.")
+
     update_script = Path(repo) / "update.sh"
     if not update_script.is_file() or update_script.is_symlink():
         raise RuntimeError("The standard updater update.sh is missing from the PiTV checkout.")
     if not RUNNER_PATH.is_file() or RUNNER_PATH.is_symlink():
-        raise RuntimeError("The trusted deployment runner is missing. Run deploy.sh from SSH once.")
+        raise RuntimeError("The trusted deployment runner is missing. Run deploy.sh from the checkout once.")
 
     command = _standard_update_command(config, branch)
-    _write_status("running", f"Running update.sh {branch}; live output is shown on the TV.", branch)
-    _append_log(f"Executing the shared updater: {update_script} {branch}.")
     try:
-        # This is the actual update.sh stdout/stderr, not a second implementation
-        # of its Git/back-up logic. No artificial timeout can turn a slow update
-        # into a false failure while the underlying command is still running.
-        with _open_update_output(append=True) as output:
-            completed = subprocess.run(
-                command, cwd=repo, stdin=subprocess.DEVNULL,
-                stdout=output, stderr=subprocess.STDOUT, check=False,
-            )
+        completed = subprocess.run(
+            command,
+            cwd=repo,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     except Exception as exc:
-        message = f"Updater could not complete: {type(exc).__name__}: {exc}"
-        try:
-            _append_update_output(f"\nERROR: {message}\n")
-        except OSError:
-            pass
-        _write_status("failed", message, branch)
+        message = f"Could not run update.sh: {type(exc).__name__}: {exc}"
         _append_log(message)
+        _write_status("failed", message, branch)
         return 1
 
+    update_output = completed.stdout or ""
+    if completed.stderr:
+        update_output += ("\n" if update_output and not update_output.endswith("\n") else "") + completed.stderr
+    try:
+        with LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(update_output)
+            if update_output and not update_output.endswith("\n"):
+                log_file.write("\n")
+    except OSError:
+        pass
+
     if completed.returncode:
-        message = f"Update failed with exit code {completed.returncode}. See the terminal output above."
-        _append_update_output(f"\nERROR: {message}\n")
-        _write_status("failed", message, branch)
+        message = f"update.sh failed with exit code {completed.returncode}. See Settings -> Logs."
         _append_log(message)
+        _write_status("failed", message, branch)
         return completed.returncode
 
     try:
-        updater_output = UPDATE_OUTPUT_PATH.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        message = f"Could not read update.sh output: {type(exc).__name__}: {exc}"
-        _append_update_output(f"\nERROR: {message}\n")
-        _write_status("failed", message, branch)
-        _append_log(message)
-        return 1
-    if f"No new updates are available on {branch}." in updater_output:
-        message = f"No new updates are available on {branch}."
-        _write_status("up-to-date", message, branch)
-        _append_log(message)
-        return 0
-
-    # update.sh makes the account/settings backup as the user. Since it skips
-    # the sudo-only key copy in TV mode, securely add the control key to that
-    # very same backup here, before any deployment can alter the system.
-    try:
-        backup_message = _backup_shared_control_key(config, branch, updater_output)
-        _append_update_output(backup_message + "\n")
+        backup_message = _backup_shared_control_key(config, branch, update_output)
         _append_log(backup_message)
     except Exception as exc:
         message = f"Settings backup failed: {type(exc).__name__}: {exc}"
-        _append_update_output(f"\nERROR: {message}\n")
-        _write_status("failed", message, branch)
         _append_log(message)
+        _write_status("failed", message, branch)
         return 1
 
-    # update.sh has completed its normal backup/Git flow. It defers only the
-    # privileged deploy step, which runs from a trusted root-owned copy so it
-    # never needs an invisible sudo password prompt on the TV.
-    _write_status("running", f"Installing updated PiTV files from {branch}.", branch)
-    _append_log(f"Starting trusted root deployment for branch {branch}.")
-    _append_update_output("\nStarting the trusted deployment step...\n")
-    runner_fd, runner_copy = tempfile.mkstemp(prefix="pitv-deploy-runner-", suffix=".sh", dir="/run")
+    _write_status("running", f"Deploying updated PiTV files from {branch}.", branch)
+    _append_log(f"Starting trusted deployment runner for {branch}.")
+
+    runner_fd, runner_copy = tempfile.mkstemp(
+        prefix="pitv-deploy-runner-", suffix=".sh", dir="/run"
+    )
     os.close(runner_fd)
     try:
-        # deploy.sh replaces the installed runner with its updated version.
-        # Execute a separate copy so it cannot overwrite its own running source.
+        # deploy.sh updates RUNNER_PATH during deployment; execute a private
+        # root-owned copy so the running shell cannot overwrite its own source.
         shutil.copyfile(RUNNER_PATH, runner_copy)
         os.chown(runner_copy, 0, 0)
         os.chmod(runner_copy, 0o700)
@@ -391,20 +366,20 @@ def _update_worker(branch: str) -> int:
             "SUDO_USER": config["user"],
             "PITV_SKIP_REBOOT_PROMPT": "1",
         })
-        with _open_update_output(append=True) as output:
+        with LOG_PATH.open("a", encoding="utf-8") as log_file:
             deploy_result = subprocess.run(
-                ["/usr/bin/bash", runner_copy], cwd=repo, env=deploy_env,
-                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                ["/usr/bin/bash", runner_copy],
+                cwd=repo,
+                env=deploy_env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
                 check=False,
             )
     except Exception as exc:
-        message = f"Deployment could not complete: {type(exc).__name__}: {exc}"
-        try:
-            _append_update_output(f"\nERROR: {message}\n")
-        except OSError:
-            pass
-        _write_status("failed", message, branch)
+        message = f"Deployment failed to run: {type(exc).__name__}: {exc}"
         _append_log(message)
+        _write_status("failed", message, branch)
         return 1
     finally:
         try:
@@ -413,100 +388,49 @@ def _update_worker(branch: str) -> int:
             pass
 
     if deploy_result.returncode:
-        message = f"Deployment failed with exit code {deploy_result.returncode}. See the terminal output above."
-        _append_update_output(f"\nERROR: {message}\n")
-        _write_status("failed", message, branch)
+        message = f"Deployment failed with exit code {deploy_result.returncode}. See Settings -> Logs."
         _append_log(message)
+        _write_status("failed", message, branch)
         return deploy_result.returncode
 
-    message = f"Standard update from {branch} completed."
+    _install_next_runner(config)
+    message = f"PiTV update from {branch} completed."
     _write_status("complete", message, branch)
     _append_log(message)
     return 0
 
 
-def _systemd_run_command(unit: str, argv: list[str]) -> list[str]:
-    """Build a transient-unit command that returns as soon as systemd accepts it."""
+def _systemd_run(unit: str, argv: list[str], *, nonblocking: bool = False) -> None:
     if not re.fullmatch(r"[a-zA-Z0-9_.@-]{1,100}", unit):
         raise RuntimeError("Invalid internal transient unit name.")
-    return [
-        "/usr/bin/systemd-run", "--no-block", "--quiet", "--collect",
-        f"--unit={unit}", "--property=Type=oneshot",
-        "--property=TimeoutStartSec=infinity", "--",
-        *argv,
-    ]
-
-
-def _systemd_run(unit: str, argv: list[str]) -> None:
-    command = _systemd_run_command(unit, argv)
-    # --no-block is essential: otherwise systemd-run waits for the oneshot to
-    # finish. The Settings request can then time out and report failure while
-    # the detached updater continues to run unseen.
+    command = ["/usr/bin/systemd-run", "--quiet", "--collect"]
+    if nonblocking:
+        command.extend(["--no-block", "--property=TimeoutStartSec=infinity"])
+    command.extend([f"--unit={unit}", "--property=Type=oneshot", "--", *argv])
     result = subprocess.run(command, capture_output=True, text=True, timeout=12, check=False)
     if result.returncode:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"Could not start the system maintenance task{(': ' + detail[-220:]) if detail else ''}"
-        )
-
-
-def _has_active_update_worker() -> bool:
-    """Inspect real systemd units instead of trusting a possibly stale status file."""
-    result = subprocess.run(
-        [
-            "/usr/bin/systemctl", "list-units", "--all", "--type=service",
-            "--no-legend", "pitv-update-*.service",
-        ],
-        capture_output=True, text=True, timeout=5, check=False,
-    )
-    if result.returncode:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"Could not check for an existing updater{(': ' + detail[-180:]) if detail else ''}"
-        )
-    active_states = {"active", "activating", "reloading", "deactivating"}
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        # systemctl list-units columns: UNIT LOAD ACTIVE SUB DESCRIPTION
-        if (len(fields) >= 4 and fields[0].startswith("pitv-update-")
-                and fields[2] in active_states):
-            return True
-    return False
+        raise RuntimeError("Could not start the system maintenance task. Check Settings → Logs.")
 
 
 def _start_update(branch: str) -> None:
     if branch not in ALLOWED_BRANCHES:
         raise RuntimeError("Only experimental and main branches are permitted.")
     _read_config()
-    current = {}
     try:
         current = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+        if current.get("status") == "running" and time.time() - int(current.get("updated_at", 0)) < 3600:
+            raise RuntimeError("A PiTV maintenance task is already running.")
+    except FileNotFoundError:
         pass
-    if current.get("status") in {"queued", "running"}:
-        age = time.time() - int(current.get("updated_at", 0) or 0)
-        # Protect the short launch race, but don't let a stale status JSON
-        # permanently prevent retrying after its systemd worker disappeared.
-        if age < 30:
-            raise RuntimeError("A PiTV update has just been requested. Open View updater terminal for its output.")
-    if _has_active_update_worker():
-        raise RuntimeError("A PiTV update worker is genuinely still active. Open View updater terminal to inspect it.")
-    if current.get("status") in {"queued", "running"}:
-        _append_log("Ignoring stale maintenance status; no active PiTV update worker exists.")
-    unit = f"pitv-update-{branch}-{int(time.time())}-{os.getpid()}"
-    # Clear this attempt's transcript before the menu switches to the terminal.
-    with _open_update_output(append=False):
+    except json.JSONDecodeError:
         pass
-    # Publish before launch, so the terminal view can appear before the first log line.
+    unit = f"pitv-update-{branch}-{int(time.time())}"
+    # Publish before asking systemd to start the worker. The worker can start
+    # immediately and must be able to replace this with "running" without a
+    # late "queued" write racing over its progress.
     _write_status("queued", f"Update from {branch} queued.", branch)
     _append_log(f"Queued detached update from {branch}.")
-    try:
-        _systemd_run(unit, [str(HELPER_PATH), "update-worker", branch])
-    except Exception as exc:
-        message = f"Could not start update worker: {type(exc).__name__}: {exc}"
-        _write_status("failed", message, branch)
-        _append_update_output(f"ERROR: {message}\n")
-        raise
+    _systemd_run(unit, [str(HELPER_PATH), "update-worker", branch], nonblocking=True)
 
 
 def _start_system_action(action: str) -> None:
@@ -566,33 +490,8 @@ def main(argv: list[str]) -> int:
         print("Usage: pitv-maintenance <status|restart-menu|reboot|update experimental|update main>", file=sys.stderr)
         return 2
     except Exception as exc:
-        branch = (
-            args[-1] if len(args) >= 2 and args[0] in {"update", "update-worker"}
-            and args[-1] in ALLOWED_BRANCHES else ""
-        )
-        message = f"Maintenance failed: {type(exc).__name__}: {exc}"
-        _write_status("failed", message, branch)
-        _append_log(message)
-        # Failures before the worker starts must also be visible in the TV log.
-        # Avoid writing into the transcript of an already-active update.
-        if args and args[0] == "update":
-            try:
-                current = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
-                busy = (current.get("status") in {"queued", "running"}
-                        and time.time() - int(current.get("updated_at", 0)) < 24 * 3600)
-            except (OSError, ValueError, TypeError):
-                busy = False
-            if not busy:
-                try:
-                    with _open_update_output(append=False) as output:
-                        output.write(f"ERROR: {message}\n")
-                except OSError:
-                    pass
-        elif args and args[0] == "update-worker":
-            try:
-                _append_update_output(f"ERROR: {message}\n")
-            except OSError:
-                pass
+        _write_status("failed", f"Maintenance failed: {type(exc).__name__}: {exc}")
+        _append_log(f"Maintenance failed: {type(exc).__name__}: {exc}")
         print(f"PiTV maintenance failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 

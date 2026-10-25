@@ -47,22 +47,6 @@ if [[ "$(git -C "$REPO" remote get-url origin)" != *"CharlieNR/PiTV"* ]]; then
     exit 1
 fi
 
-# Detect a genuine no-op before creating a backup or redeploying. Only report
-# "no updates" when this is the requested branch, the checkout is clean, and
-# local HEAD exactly matches the freshly fetched remote HEAD.
-CURRENT_BRANCH="$(git -C "$REPO" branch --show-current)"
-if [[ "$FORCE_RESET" -eq 0 && "$CURRENT_BRANCH" == "$TARGET_BRANCH" \
-      && -z "$(git -C "$REPO" status --porcelain --untracked-files=all)" ]]; then
-    echo "Checking GitHub for updates on branch '$TARGET_BRANCH'..."
-    git -C "$REPO" fetch origin "refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH"
-    LOCAL_HEAD="$(git -C "$REPO" rev-parse HEAD)"
-    REMOTE_HEAD="$(git -C "$REPO" rev-parse "refs/remotes/origin/$TARGET_BRANCH")"
-    if [[ "$LOCAL_HEAD" == "$REMOTE_HEAD" ]]; then
-        echo "No new updates are available on $TARGET_BRANCH."
-        exit 0
-    fi
-fi
-
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_ROOT="${PITV_BACKUP_DIR:-$HOME/pitv-update-backups}"
 BACKUP_DIR="$BACKUP_ROOT/$STAMP-$TARGET_BRANCH"
@@ -158,11 +142,11 @@ if [[ "$FORCE_RESET" -eq 1 ]]; then
 fi
 
 cd "$REPO"
-echo "Deploying the updated '$TARGET_BRANCH' version..."
 if [[ "${PITV_DEFER_DEPLOY:-0}" == "1" ]]; then
     echo "Source update complete; deployment is delegated to the trusted PiTV maintenance worker."
     exit 0
 fi
+echo "Deploying the updated '$TARGET_BRANCH' version..."
 # Invoke through Bash so deployment still works if Git checkout loses the executable bit.
 bash ./deploy.sh
 

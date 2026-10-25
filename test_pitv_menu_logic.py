@@ -5,7 +5,6 @@ import json
 import tempfile
 import time
 import unittest
-from types import SimpleNamespace
 from unittest.mock import mock_open, patch
 
 import tv_menu
@@ -77,7 +76,7 @@ class SettingsGuardTests(unittest.TestCase):
 
         self.assertEqual(tv_menu.current_view, "SETTINGS")
         self.assertEqual(tv_menu.settings_page, "SYSTEM")
-        self.assertEqual(tv_menu.settings_selected, 7)
+        self.assertEqual(tv_menu.settings_selected, 6)
         self.assertIn("private admin code", tv_menu.settings_message.lower())
 
     def test_expired_authorisation_reopens_admin_code_prompt(self):
@@ -131,20 +130,6 @@ class GraphicsRecoveryTests(unittest.TestCase):
 
 
 class MaintenanceStatusTests(unittest.TestCase):
-    def test_running_status_is_preserved_for_terminal_footer(self):
-        payload = {
-            "status": "running",
-            "message": "Running update.sh experimental; live output is shown on the TV.",
-            "branch": "experimental",
-            "updated_at": int(time.time()),
-        }
-        with patch("builtins.open", mock_open(read_data=json.dumps(payload))):
-            status = tv_menu._settings_maintenance_status()
-
-        self.assertEqual(status["status"], "running")
-        self.assertEqual(status["branch"], "experimental")
-        self.assertIn("live output", status["message"])
-
     def test_up_to_date_status_is_preserved_for_settings_ui(self):
         payload = {
             "status": "up-to-date",
@@ -158,131 +143,6 @@ class MaintenanceStatusTests(unittest.TestCase):
         self.assertEqual(status["status"], "up-to-date")
         self.assertEqual(status["message"], "No new updates are available on experimental.")
         self.assertEqual(status["branch"], "experimental")
-
-
-class UpdaterResumeSafetyTests(unittest.TestCase):
-    def test_stale_running_status_does_not_resume_without_live_systemd_unit(self):
-        status = {
-            "status": "running",
-            "message": "Running update",
-            "branch": "experimental",
-        }
-        result = SimpleNamespace(returncode=0, stdout="", stderr="")
-        with (
-            patch.object(tv_menu, "_settings_maintenance_status", return_value=status),
-            patch.object(tv_menu.subprocess, "run", return_value=result) as run,
-        ):
-            self.assertFalse(tv_menu._settings_should_resume_update_terminal())
-        run.assert_called_once()
-
-    def test_live_experimental_worker_allows_terminal_resume(self):
-        status = {
-            "status": "running",
-            "message": "Running update",
-            "branch": "experimental",
-        }
-        output = (
-            "pitv-update-experimental-123.service loaded active running "
-            "PiTV update worker"
-        )
-        result = SimpleNamespace(returncode=0, stdout=output, stderr="")
-        with (
-            patch.object(tv_menu, "_settings_maintenance_status", return_value=status),
-            patch.object(tv_menu.subprocess, "run", return_value=result),
-        ):
-            self.assertTrue(tv_menu._settings_should_resume_update_terminal())
-
-    def test_completed_status_does_not_probe_systemd_or_resume(self):
-        status = {
-            "status": "complete",
-            "message": "Update completed",
-            "branch": "experimental",
-        }
-        with (
-            patch.object(tv_menu, "_settings_maintenance_status", return_value=status),
-            patch.object(tv_menu.subprocess, "run") as run,
-        ):
-            self.assertFalse(tv_menu._settings_should_resume_update_terminal())
-        run.assert_not_called()
-
-    def test_systemctl_error_falls_back_to_normal_ui_startup(self):
-        status = {
-            "status": "running",
-            "message": "Running update",
-            "branch": "main",
-        }
-        with (
-            patch.object(tv_menu, "_settings_maintenance_status", return_value=status),
-            patch.object(tv_menu.subprocess, "run", side_effect=TimeoutError("systemctl timed out")),
-        ):
-            self.assertFalse(tv_menu._settings_should_resume_update_terminal())
-
-
-class TerminalTailTests(unittest.TestCase):
-    def setUp(self):
-        self.names = (
-            "settings_update_terminal_lines", "settings_update_terminal_scroll",
-            "settings_update_terminal_follow", "settings_update_terminal_last_refresh",
-            "settings_update_terminal_started_at", "settings_update_terminal_launch_error",
-            "settings_update_terminal_status", "settings_update_terminal_log_offset",
-            "settings_update_terminal_log_identity", "settings_update_terminal_partial_line",
-        )
-        self.old = {name: getattr(tv_menu, name) for name in self.names}
-
-    def tearDown(self):
-        for name, value in self.old.items():
-            setattr(tv_menu, name, value)
-
-    def test_terminal_reader_appends_only_new_output_and_finishes_partial_line(self):
-        with tempfile.TemporaryDirectory() as temp:
-            log_path = f"{temp}/update.log"
-            with open(log_path, "w", encoding="utf-8") as handle:
-                handle.write("first line\nsecond")
-            tv_menu.settings_update_terminal_lines = []
-            tv_menu.settings_update_terminal_scroll = 0
-            tv_menu.settings_update_terminal_follow = True
-            tv_menu.settings_update_terminal_last_refresh = 0.0
-            tv_menu.settings_update_terminal_started_at = 0.0
-            tv_menu.settings_update_terminal_launch_error = ""
-            tv_menu.settings_update_terminal_log_offset = 0
-            tv_menu.settings_update_terminal_log_identity = None
-            tv_menu.settings_update_terminal_partial_line = ""
-            status = {"status": "running", "message": "Updating", "branch": "experimental",
-                      "updated_at": int(time.time())}
-            with (
-                patch.object(tv_menu, "UPDATE_TERMINAL_LOG_PATH", log_path),
-                patch.object(tv_menu, "_settings_maintenance_status", return_value=status),
-            ):
-                tv_menu._settings_refresh_update_terminal(force=True)
-                self.assertEqual(tv_menu.settings_update_terminal_lines[-1], "first line")
-                self.assertEqual(tv_menu.settings_update_terminal_partial_line, "second")
-                offset = tv_menu.settings_update_terminal_log_offset
-                tv_menu._settings_refresh_update_terminal(force=True)
-                self.assertEqual(tv_menu.settings_update_terminal_log_offset, offset)
-                self.assertEqual(tv_menu.settings_update_terminal_lines.count("first line"), 1)
-                with open(log_path, "a", encoding="utf-8") as handle:
-                    handle.write(" line\nthird line\n")
-                tv_menu._settings_refresh_update_terminal(force=True)
-
-            self.assertIn("second line", tv_menu.settings_update_terminal_lines)
-            self.assertIn("third line", tv_menu.settings_update_terminal_lines)
-            self.assertEqual(tv_menu.settings_update_terminal_partial_line, "")
-
-
-class SettingsUpdateActionTests(unittest.TestCase):
-    def test_system_settings_exposes_terminal_and_direct_update_actions(self):
-        previous_page = tv_menu.settings_page
-        try:
-            tv_menu.settings_page = "SYSTEM"
-            items = tv_menu._settings_current_items()
-            by_action = {item[3]: item for item in items}
-            self.assertIn("VIEW_UPDATE_TERMINAL", by_action)
-            self.assertIn("UPDATE_EXPERIMENTAL", by_action)
-            self.assertIn("UPDATE_STABLE", by_action)
-            self.assertNotIn("CONFIRM_UPDATE_EXPERIMENTAL", by_action)
-            self.assertIn("terminal", by_action["UPDATE_EXPERIMENTAL"][2].lower())
-        finally:
-            tv_menu.settings_page = previous_page
 
 
 class TVPowerSleepRequestTests(unittest.TestCase):
