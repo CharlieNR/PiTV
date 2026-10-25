@@ -37,6 +37,10 @@ jobs:
               py_compile.compile(str(path), doraise=True)
               print(f"OK {path}")
           PY
+      - name: Install framebuffer-independent test dependency
+        run: python -m pip install --disable-pip-version-check Pillow
+      - name: Run hardware-free carousel smoke tests
+        run: python -m unittest -v test_pitv_carousel
       - name: Check shell syntax
         run: |
           set -eu
