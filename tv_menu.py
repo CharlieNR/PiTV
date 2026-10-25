@@ -4535,6 +4535,10 @@ def _settings_submit_input():
         _settings_set_message("Names must be no longer than 40 characters.")
         return
     if context == "PIN_ADD":
+        existing_names = {record["name"].casefold() for record in _settings_pin_records()}
+        if value.casefold() in existing_names:
+            _settings_set_message("A player PIN already exists for that name.")
+            return
         current_view = "SETTINGS"
         settings_page = "PINS"
         settings_selected = 0
@@ -4544,8 +4548,13 @@ def _settings_submit_input():
         current_view = "SETTINGS"
         settings_page = "PIN_DETAIL"
         settings_selected = 0
-        if value == old:
+        existing_names = {record["name"].casefold() for record in _settings_pin_records()
+                           if record["name"].casefold() != old.casefold()}
+        if value.casefold() == old.casefold():
             _settings_set_message("The name has not changed.")
+        elif value.casefold() in existing_names:
+            _settings_set_message("Another player already has that name.")
+            return
         else:
             _settings_run_pin_command(["rename", old, value], f"Renamed {old} to {value}")
             settings_selected_name = value
@@ -4559,8 +4568,11 @@ def _settings_submit_input():
         settings_selected = 0
         _settings_run_pin_command(["assign", name, "custom", value], f"Changed PIN for {name}")
     elif context == "GUEST_ADD":
-        if value in _settings_guest_names():
+        if any(name.casefold() == value.casefold() for name in _settings_guest_names()):
             _settings_set_message("That guest already exists. Choose a different name.")
+            return
+        if any(record["name"].casefold() == value.casefold() for record in _settings_pin_records()):
+            _settings_set_message("That name already has a player PIN. Choose a different name.")
             return
         password = secrets.token_urlsafe(9)
         current_view = "SETTINGS"
