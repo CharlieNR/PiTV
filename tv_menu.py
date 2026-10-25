@@ -2632,6 +2632,13 @@ def run_game(stdscr, cmd_list: list):
             # bails on this terminal) leaves a diagnosable trace in the log.
             game_log = open("/tmp/pitv-game.log", "w")
             proc = subprocess.Popen(cmd_list, env=env, stderr=game_log)
+            game_key = next(
+                (key for _label, commands, key, _two_player in GAME_OPTIONS
+                 if commands and commands[0] == binary),
+                None,
+            )
+            if game_key:
+                _record_recent_game(game_key)
             _set_external_game_state(True)
         except Exception as e:
             log(f"ERROR launching {binary}: {e}")
@@ -2683,6 +2690,7 @@ def run_snake(stdscr):
     no controller-to-keys mapper needed.
     """
     global controller_mode
+    _record_recent_game("SNAKE")
     log("Snake: start (built-in)")
     controller_mode = "GAME_INTERNAL"
     input_queue.clear()
@@ -2869,6 +2877,7 @@ def run_noughts(stdscr, vs_computer=False):
     external binary, so nothing to install or crash.
     """
     global controller_mode
+    _record_recent_game("TICTACTOE")
     log(f"Noughts & Crosses: start ({'1P vs CPU' if vs_computer else '2P'})")
     controller_mode = "GAME_INTERNAL"
     input_queue.clear()
@@ -3951,6 +3960,7 @@ def _handle_entered_game_pin(stdscr, entered: str) -> None:
                 log(f"Imposter setup: accepted PIN for player {imposter_pin_stage-1}")
                 return
             current_view="GAMES_MENU";_publish_pin_entry_state()
+            _record_recent_game("IMPOSTER")
             run_imposter(stdscr,list(imposter_players))
             current_view="GAMES_MENU"
             return
@@ -4025,6 +4035,41 @@ def _activate_game_selection(stdscr):
         ttt_p1 = ""
         keypad_entered = keypad_error = ""
         current_view = "KEYPAD"
+
+
+
+def _launch_home_game_key(stdscr, game_key):
+    """Route carousel/history launches through the normal PIN-protected path."""
+    global selected_game_idx, current_view, home_focus
+    key = str(game_key or "").strip().upper()
+    index = next((i for i, option in enumerate(GAME_OPTIONS) if option[2] == key), None)
+    if index is None:
+        _settings_set_message("That game is no longer available.")
+        return
+    if key not in ("SNAKE", "TICTACTOE", "IMPOSTER"):
+        commands = GAME_KEYS.get(key, [])
+        if not commands or not resolve_binary(commands[0]):
+            selected_game_idx = index
+            current_view = "GAMES_MENU"
+            _settings_set_message("That game is not installed. Open Games for installation details.")
+            return
+    selected_game_idx = index
+    home_focus = "carousel"
+    _activate_game_selection(stdscr)
+
+
+def _launch_home_carousel_game(stdscr):
+    """Launch the focused carousel title, preserving normal PIN requirements."""
+    if not GRAPHIC_UI_AVAILABLE or pitv_tvui is None:
+        return
+    games = _available_carousel_games()
+    if not games:
+        _settings_set_message("No carousel games are available. Install a supported game first.")
+        return
+    index = pitv_tvui.carousel_index()
+    index = max(0, min(int(index), len(games) - 1))
+    _launch_home_game_key(stdscr, games[index][1])
+
 
 
 def _reset_graphic_ui_cache():
@@ -4785,6 +4830,9 @@ def main(stdscr):
     last_key_time = 0.0
 
     while True:
+        if settings_message and settings_message_until and time.monotonic() >= settings_message_until:
+            settings_message = ""
+            settings_message_until = 0.0
         if fake_off_active and not hard_locked and not system_locked:
             current_view = "FAKE_OFF"
 
