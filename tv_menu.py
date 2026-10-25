@@ -4157,8 +4157,17 @@ def _record_recent_game(game_key):
     try:
         raw = pitv_state.read_value("RECENT_GAMES", [])
         history = [str(x).strip().upper() for x in raw] if isinstance(raw, list) else []
-        history = [x for x in history if x != key and x in valid]
-        pitv_state.write_value("RECENT_GAMES", [key] + history[:11])
+        # Repair old or malformed histories as we write: preserve only the
+        # first/newest instance of each valid game, after the newly launched key.
+        seen = {key}
+        unique_history = []
+        for item in history:
+            if item in valid and item not in seen:
+                unique_history.append(item)
+                seen.add(item)
+                if len(unique_history) >= 11:
+                    break
+        pitv_state.write_value("RECENT_GAMES", [key] + unique_history)
     except Exception as exc:
         log(f"Could not save Recently Played history: {type(exc).__name__}")
 
