@@ -4683,7 +4683,18 @@ def _settings_execute_confirm():
         _settings_set_message("Recently Played history cleared.")
     elif action == "PIN_REMOVE":
         name = settings_selected_name
-        _settings_run_pin_command(["remove", name], f"Removed PIN for {name}")
+        if settings_selected_temporary:
+            try:
+                removed = pitv_pins.remove_temporary_pin(name)
+                _settings_set_message(
+                    f"Removed temporary PIN for {name}." if removed
+                    else f"No active temporary PIN was found for {name}."
+                )
+                log("Settings: temporary PIN removal " + ("succeeded" if removed else "found no matching entry"))
+            except Exception as exc:
+                _settings_set_message(f"Could not remove temporary PIN: {type(exc).__name__}")
+        else:
+            _settings_run_pin_command(["remove", name], f"Removed PIN for {name}")
         settings_page = "PINS"
         settings_selected = 0
     elif action == "GUEST_REMOVE":
