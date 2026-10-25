@@ -26,6 +26,75 @@ def _component(value: int, offset: int, length: int, msb_right: int, label: str)
         raise RuntimeError(f"Unsupported framebuffer {label} bitfield (msb_right={msb_right}).")
     return ((value * ((1 << length) - 1) + 127) // 255) << offset
 
+
+def _pack_with_numpy(canvas: Image.Image, info: dict[str, Any]):
+    """Fast optional vectorised pixel packing; safely fall back if NumPy cannot help."""
+    bits = int(info["bits_per_pixel"])
+    if bits not in (16, 24, 32):
+        return None
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    try:
+        pixels = np.asarray(canvas, dtype=np.uint8)
+        height, width = pixels.shape[:2]
+        packed = np.zeros((height, width), dtype=np.uint32)
+        for channel_index, field in enumerate((info["red"], info["green"], info["blue"])):
+            offset, length, msb_right = field
+            if msb_right:
+                return None
+            if length <= 0:
+                continue
+            maximum = (1 << length) - 1
+            component = (
+                (pixels[:, :, channel_index].astype(np.uint32) * maximum + 127) // 255
+            )
+            packed |= component << int(offset)
+
+        trans_offset, trans_length, trans_msb_right = info["transparency"]
+        if trans_msb_right:
+            return None
+        if trans_length > 0:
+            packed |= np.uint32(((1 << trans_length) - 1) << trans_offset)
+
+        if bits == 16:
+            raw = np.ascontiguousarray(packed.astype(np.uint16)).tobytes()
+        elif bits == 32:
+            raw = np.ascontiguousarray(packed.astype(np.uint32)).tobytes()
+        else:
+            byte_view = np.ascontiguousarray(packed).view(np.uint8).reshape(height, width, 4)
+            byte_view = byte_view[:, :, :3] if sys.byteorder == "little" else byte_view[:, :, 1:4]
+            raw = np.ascontiguousarray(byte_view).tobytes()
+
+        bytes_per_pixel = int(info["bytes_per_pixel"])
+        row_bytes = width * bytes_per_pixel
+        if len(raw) != row_bytes * height:
+            return None
+        line_length = int(info["line_length"])
+        pixel_start = int(info["xoffset"]) * bytes_per_pixel
+        frame = bytearray(line_length * height)
+        if pixel_start == 0 and line_length == row_bytes:
+            frame[:] = raw
+        else:
+            for y in range(height):
+                src = y * row_bytes
+                dst = y * line_length + pixel_start
+                frame[dst:dst + row_bytes] = raw[src:src + row_bytes]
+        return {
+            "frame": bytes(frame),
+            "info": info,
+            "source_width": int(canvas.width),
+            "source_height": int(canvas.height),
+            "packing_method": "numpy-vectorized",
+        }
+    except Exception:
+        # Optional acceleration must never prevent the known-good renderer
+        # from drawing. Any unsupported NumPy/Pillow combination uses fallback.
+        return None
+
+
 def _pack_with_pillow_math(canvas: Image.Image, info: dict[str, Any]):
     """Pack uncommon 16/32-bit framebuffer layouts in Pillow's native pixel engine."""
     bits = int(info["bits_per_pixel"])
@@ -243,6 +312,10 @@ def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any
             "source_height": source_height,
             "packing_method": "pillow-raw",
         }
+
+    vectorised = _pack_with_numpy(canvas, info)
+    if vectorised is not None:
+        return vectorised
 
     packed_frame = _pack_with_pillow_math(canvas, info)
     if packed_frame is not None:
