@@ -197,6 +197,8 @@ settings_selected_name = ""
 settings_selected_temporary = False
 settings_confirm_action = ""
 settings_confirm_label = ""
+settings_confirm_return_page = "ROOT"
+settings_bt_devices = []
 settings_log_lines = []
 settings_log_scroll = 0
 settings_busy = ""
@@ -4415,7 +4417,7 @@ def _settings_home():
 
 
 def _settings_submit_input():
-    global settings_page, settings_selected_name, current_view
+    global settings_page, settings_selected_name, current_view, settings_authorized_until
     value = settings_text.strip()
     context = settings_input_context
     if context in ("PIN_ADD", "PIN_RENAME", "GUEST_ADD") and not value:
@@ -4603,10 +4605,20 @@ def _settings_execute_confirm():
 def _settings_select_action(item):
     global current_view, settings_page, settings_selected
     global settings_selected_name, settings_selected_temporary, settings_log_scroll
-    global settings_authorized_until
+    global settings_authorized_until, settings_pending_page, settings_auth_entered
+    global settings_key_row, settings_key_col
     if not item or len(item) < 4:
         return
     action = str(item[3])
+    if (settings_page in _SETTINGS_PROTECTED_PAGES
+            and time.monotonic() >= settings_authorized_until
+            and action not in ("BACK", "BACK_HOME")):
+        settings_pending_page = settings_page
+        settings_auth_entered = ""
+        settings_key_row = settings_key_col = 0
+        _settings_set_message("Authorisation expired; enter the admin code again.")
+        current_view = "SETTINGS_AUTH"
+        return
     payload = str(item[4]) if len(item) > 4 else ""
     if action == "PAGE":
         _settings_open_page(payload)
