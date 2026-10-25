@@ -4539,8 +4539,20 @@ def _settings_home():
 
 def _settings_submit_input():
     global settings_page, settings_selected_name, current_view, settings_authorized_until
+    global settings_input_context, settings_text, settings_auth_entered, settings_pending_page
+    global settings_key_row, settings_key_col
     value = settings_text.strip()
     context = settings_input_context
+    if (settings_input_return_page in _SETTINGS_PROTECTED_PAGES
+            and time.monotonic() >= settings_authorized_until):
+        # Drop any typed PIN/password when the authorisation window expires.
+        settings_text = ""
+        settings_input_context = ""
+        settings_auth_entered = ""
+        settings_key_row = settings_key_col = 0
+        _settings_open_page(settings_input_return_page)
+        _settings_set_message("Authorisation expired. Re-enter the admin code, then re-enter the details.")
+        return
     if context in ("PIN_ADD", "PIN_RENAME", "GUEST_ADD") and not value:
         _settings_set_message("Enter a non-empty name.")
         return
