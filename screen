@@ -253,11 +253,22 @@ case "$CMD" in
         fi
 
         REASON="$*"
-        FLAG_FILE="/home/charlie/shutdown_flag.txt"
+        REQUEST_USER="${SUDO_USER:-}"
+        if [[ -z "$REQUEST_USER" ]] || ! id "$REQUEST_USER" >/dev/null 2>&1; then
+            echo "Cannot identify the PiTV login user for the restart report." >&2
+            exit 1
+        fi
+        USER_HOME="$(getent passwd "$REQUEST_USER" | cut -d: -f6)"
+        if [[ -z "$USER_HOME" || ! -d "$USER_HOME" ]]; then
+            echo "Cannot resolve the PiTV login user's home directory." >&2
+            exit 1
+        fi
+        FLAG_FILE="$USER_HOME/shutdown_flag.txt"
 
-        # boot_report.py consumes this file on the next boot and reports the
-        # reason in the status email.
+        # Keep the restart reason in the configured PiTV user's home directory.
         printf '%s\n' "$REASON" > "$FLAG_FILE"
+        chown "$REQUEST_USER" "$FLAG_FILE"
+        chmod 600 "$FLAG_FILE"
 
         exec /usr/bin/systemctl reboot
         ;;
