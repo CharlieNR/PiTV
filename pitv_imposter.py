@@ -84,7 +84,7 @@ def create_game(game_id, names, join_url):
         raise ValueError("Imposter supports at most eight players.")
     state = {
         "active": True, "game_id": game_id, "join_url": join_url, "phase": "join",
-        "round_number": 1, "rounds_per_game": 3, "created_at": time.time(),
+        "round_number": 1, "created_at": time.time(),
         "players": [{"name": n, "joined": False, "token": "", "role": "", "vote": ""} for n in names],
         "imposter": "", "word_picker": "", "word": "", "turn_index": 0,
         "votes": {}, "results": [], "vote_ends_at": 0, "reveal_at": 0, "error": ""
@@ -137,7 +137,6 @@ def player_view(game_id, token):
         "you": str(p.get("name", "")), "role": str(p.get("role", "")), "word": word,
         "players": names, "joined_count": joined, "player_count": len(names),
         "round_number": int(s.get("round_number", 1) or 1),
-        "rounds_per_game": int(s.get("rounds_per_game", 3) or 3),
         "current_turn": names[idx] if 0 <= idx < len(names) else "",
         "vote_ends_at": float(s.get("vote_ends_at", 0) or 0),
         "my_vote": str(s.get("votes", {}).get(p.get("name", ""), "")),
@@ -196,11 +195,9 @@ def advance_turn(game_id, token=None):
         if i + 1 < len(players):
             s["turn_index"] = i + 1
         else:
-            rounds_per_game = max(1, int(s.get("rounds_per_game", 3) or 3))
-            if int(s.get("round_number", 1) or 1) >= rounds_per_game:
-                _begin_vote(s)
-            else:
-                s["phase"] = "round_complete"
+            # Clue rounds are unlimited; the host chooses when the group is
+            # ready to vote using the explicit VOTE NOW option.
+            s["phase"] = "round_complete"
         return {"ok": True, "phase": s["phase"]}
 
 
@@ -238,9 +235,7 @@ def repeat_round(game_id):
         if (not s.get("active") or s.get("game_id") != game_id
                 or s.get("phase") != "round_complete"):
             return False
-        rounds_per_game = max(1, int(s.get("rounds_per_game", 3) or 3))
-        if int(s.get("round_number", 1) or 1) >= rounds_per_game:
-            return False
+        # Another clue pass can be started for as long as the host wants.
         s["round_number"] = int(s.get("round_number", 1) or 1) + 1
         s["turn_index"] = 0
         s["phase"] = "round"
@@ -255,7 +250,6 @@ def next_round(game_id):
         if not s.get("active") or s.get("game_id") != game_id or s.get("phase") != "revealed":
             return False
         s["round_number"] = 1
-        s["rounds_per_game"] = max(1, int(s.get("rounds_per_game", 3) or 3))
         _assign_roles(s)
         return s.get("phase") == "choose_word"
 
@@ -276,8 +270,13 @@ def advance_deadlines(game_id, now=None):
             for target in s.get("votes", {}).values():
                 if target:
                     counts[target] = counts.get(target, 0) + 1
-            s["results"] = [{"name": n, "count": c} for n, c in
-                sorted(counts.items(), key=lambda it: (it[1], it[0].casefold())) if c > 0]
-            s["phase"], s["reveal_at"] = "results", now + 5
+            # Rank every player, including those with zero votes, for a stable podium.
+            names = [str(p.get("name", "")) for p in s.get("players", [])]
+            s["results"] = [
+                {"name": name, "count": int(counts.get(name, 0))}
+                for name in sorted(names, key=lambda n: (-int(counts.get(n, 0)), n.casefold()))
+            ]
+            # Reveal the podium one place at a time before revealing the actual imposter.
+            s["phase"], s["reveal_at"] = "results", now + 9
         elif s.get("phase") == "results" and now >= float(s.get("reveal_at", 0) or 0):
             s["phase"], s["reveal_at"] = "revealed", 0

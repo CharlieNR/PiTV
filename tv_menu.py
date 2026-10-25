@@ -1350,8 +1350,8 @@ def _imposter_start_join_image(stdscr, image_path, prepared=None):
         return None
 
 
-def _imposter_stop_join_image(stdscr, displayed):
-    """Remove the full-screen PNG, then force curses to repaint its whole area."""
+def _imposter_stop_join_image(stdscr, displayed, restore_terminal=True):
+    """Remove the full-screen PNG; optionally avoid a curses repaint before V2 draws."""
     if displayed is not None:
         try:
             pitv_framebuffer.clear_framebuffer("/dev/fb0")
@@ -1362,7 +1362,8 @@ def _imposter_stop_join_image(stdscr, displayed):
         curses.curs_set(0)
         stdscr.clear()
         stdscr.clearok(True)
-        stdscr.refresh()
+        if restore_terminal:
+            stdscr.refresh()
     except curses.error:
         pass
 
@@ -1389,6 +1390,33 @@ def _imposter_draw_lines(stdscr,title,lines):
     _imposter_center(stdscr,h-1,footer,curses.color_pair(3)|curses.A_DIM)
     stdscr.refresh()
 
+
+
+
+_IMPOSTER_DRAW_SCREEN = None
+
+def _imposter_render_screen(state, fallback_title="IMPOSTER", fallback_lines=None):
+    """Prefer a full-screen V2 image for every Imposter phase."""
+    global _GRAPHIC_UI_FAILED
+    if (UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None
+            and not _GRAPHIC_UI_FAILED):
+        try:
+            pitv_tvui.render(state, log_fn=log)
+            return True
+        except Exception as exc:
+            log(f"Imposter V2 renderer failed: {exc!r}")
+            for trace_line in traceback.format_exception(type(exc), exc, exc.__traceback__):
+                for trace_part in trace_line.rstrip().splitlines():
+                    log(f"Imposter V2 traceback: {trace_part}")
+            try:
+                pitv_framebuffer.clear_framebuffer()
+            except Exception:
+                pass
+            _GRAPHIC_UI_FAILED = True
+    if _IMPOSTER_DRAW_SCREEN is not None:
+        _imposter_draw_lines(_IMPOSTER_DRAW_SCREEN, fallback_title,
+                             fallback_lines or ["Imposter screen unavailable."])
+    return False
 
 def _imposter_draw_results(stdscr,results,progress):
     h,w=stdscr.getmaxyx()
@@ -1425,7 +1453,8 @@ def _imposter_draw_results(stdscr,results,progress):
 
 
 def run_imposter(stdscr,players: list[str]) -> None:
-    global controller_mode, _imposter_preparation
+    global controller_mode, _imposter_preparation, _IMPOSTER_DRAW_SCREEN
+    _IMPOSTER_DRAW_SCREEN = stdscr
     prep_item = None
     with _imposter_preparation_lock:
         if _imposter_preparation and _imposter_preparation.get("total") == len(players):
@@ -1501,11 +1530,12 @@ def run_imposter(stdscr,players: list[str]) -> None:
             pitv_imposter.advance_deadlines(game_id)
             state=pitv_imposter.read_state();phase=str(state.get("phase","join"));now=time.time()
             if phase!="join" and join_viewer is not None:
-                _imposter_stop_join_image(stdscr,join_viewer)
+                _imposter_stop_join_image(stdscr,join_viewer,restore_terminal=False)
                 join_viewer=None
                 join_image_joined=None
                 join_attempted_count=None
                 drawn=None
+                last_draw=0.0
             joined_count=sum(1 for p in state.get("players",[]) if p.get("joined"))
             join_needs_refresh=(phase=="join" and (
                 (join_viewer is None and join_attempted_count!=joined_count)
@@ -1583,46 +1613,92 @@ def run_imposter(stdscr,players: list[str]) -> None:
                                     "No character-based QR substitute is being shown.",
                                 ])
                 elif phase=="choose_word":
-                    _imposter_draw_lines(stdscr,"IMPOSTER",["All players are connected.","The word is being chosen on a phone.","The imposter does not receive the word.","Waiting for the word chooser to press Enter."])
+                    _imposter_render_screen({
+                        "view": "IMPOSTER_WORD",
+                        "word_picker": state.get("word_picker", ""),
+                        "players": [p.get("name", "") for p in state.get("players", [])],
+                        "round_number": int(state.get("round_number", 1) or 1),
+                    }, "IMPOSTER", [
+                        "All players are connected.",
+                        "The word is being chosen on a phone.",
+                        "The imposter does not receive the word.",
+                    ])
                 elif phase=="round":
-                    names=[p["name"] for p in state.get("players",[])];idx=int(state.get("turn_index",0) or 0)
-                    who=names[idx] if 0<=idx<len(names) else "?"
-                    round_number = int(state.get("round_number", 1) or 1)
-                    rounds_per_game = int(state.get("rounds_per_game", 3) or 3)
-                    _imposter_draw_lines(stdscr,
-                        f"IMPOSTER — ROUND {round_number}/{rounds_per_game}",
-                        [("NOW IT IS",curses.color_pair(3)),
-                         (who.upper()+"'S GO",curses.color_pair(2)|curses.A_BOLD),
-                         "Give a clue without saying the exact word.",
-                         "Select: next player"])
+                    names=[str(p.get("name", "")) for p in state.get("players",[])]
+                    idx=max(0,min(int(state.get("turn_index",0) or 0),max(0,len(names)-1)))
+                    who=names[idx] if names else "?"
+                    _imposter_render_screen({
+                        "view": "IMPOSTER_TURN",
+                        "round_number": int(state.get("round_number", 1) or 1),
+                        "turn_index": idx,
+                        "current_turn": who,
+                        "players": names,
+                        "player_count": len(names),
+                    }, f"IMPOSTER — ROUND {state.get('round_number', 1)}", [
+                        f"NOW IT IS {who.upper()}'S GO",
+                        "Give a clue without saying the exact word.",
+                        "Select: next player",
+                    ])
                 elif phase=="round_complete":
-                    round_number = int(state.get("round_number", 1) or 1)
-                    rounds_per_game = int(state.get("rounds_per_game", 3) or 3)
-                    _imposter_draw_lines(stdscr,
-                        f"ROUND {round_number}/{rounds_per_game} COMPLETE",
-                        ["Everyone has had a turn.",
-                         ("GO ROUND AGAIN — SAME ROLES & WORD",
-                          curses.color_pair(2)|curses.A_BOLD|(curses.A_REVERSE if choice==0 else 0)),
-                         ("VOTE NOW",
-                          curses.color_pair(5)|curses.A_BOLD|(curses.A_REVERSE if choice==1 else 0)),
-                         "Up/Down: choose    Select: confirm"])
+                    _imposter_render_screen({
+                        "view": "IMPOSTER_ROUND_COMPLETE",
+                        "round_number": int(state.get("round_number", 1) or 1),
+                        "choice": choice,
+                        "players": [p.get("name", "") for p in state.get("players", [])],
+                    }, "ROUND COMPLETE", [
+                        "Everyone has had a turn.",
+                        "Another clue round or start the vote.",
+                        "Up/Down: choose; Select: confirm",
+                    ])
                 elif phase=="vote":
                     rem=max(0,int(float(state.get("vote_ends_at",now))-now+0.999))
-                    _imposter_draw_lines(stdscr,"VOTE NOW",["Choose who you think the imposter is on your phone.",f"{rem} seconds remaining.","Votes can be changed until time runs out."])
+                    _imposter_render_screen({
+                        "view": "IMPOSTER_VOTE",
+                        "seconds_remaining": rem,
+                        "player_count": len(state.get("players", [])),
+                        "votes_cast": len(state.get("votes", {})),
+                    }, "VOTE NOW", [
+                        f"{rem} seconds remaining.",
+                        "Choose who you think the imposter is on your phone.",
+                    ])
                 elif phase=="results":
-                    _imposter_draw_results(stdscr,state.get("results",[]),min(1.0,(now-(results_started or now))/2.4))
+                    elapsed=max(0.0, now-float(results_started or now))
+                    if elapsed < 1.0:
+                        podium_stage = 0
+                    elif elapsed < 3.0:
+                        podium_stage = 1
+                    elif elapsed < 5.0:
+                        podium_stage = 2
+                    else:
+                        podium_stage = 3
+                    _imposter_render_screen({
+                        "view": "IMPOSTER_RESULTS",
+                        "results": state.get("results", []),
+                        "podium_stage": podium_stage,
+                    }, "VOTE RESULTS", ["The votes are being revealed."])
                 elif phase=="revealed":
-                    lines=[f"{x.get('name')}: {x.get('count')} vote(s)" for x in state.get("results",[])]
-                    lines += ["",("THE IMPOSTER WAS: "+str(state.get("imposter","?")).upper(),curses.color_pair(1)|curses.A_BOLD),
-                              ("THE WORD WAS: "+str(state.get("word","")),curses.color_pair(2)|curses.A_BOLD),
-                              "Select: new game (new roles/word)  |  Back: exit"]
-                    _imposter_draw_lines(stdscr,"REVEAL",lines)
+                    _imposter_render_screen({
+                        "view": "IMPOSTER_REVEALED",
+                        "imposter": state.get("imposter", "?"),
+                        "word": state.get("word", ""),
+                        "results": state.get("results", []),
+                    }, "REVEAL", [
+                        "THE IMPOSTER WAS: " + str(state.get("imposter", "?")).upper(),
+                        "THE WORD WAS: " + str(state.get("word", "")),
+                        "Select: new roles and word; Back: exit",
+                    ])
                 drawn=sig;last_draw=time.time()
             time.sleep(0.08)
     finally:
         if join_viewer is not None:
             _imposter_stop_join_image(stdscr,join_viewer)
         pitv_imposter.end_game(game_id);input_queue.clear();controller_mode=prior
+        _IMPOSTER_DRAW_SCREEN = None
+        if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+            try:
+                pitv_tvui.reset_cache()
+            except Exception:
+                pass
 
 
 def route_remote_key(tok: str) -> None:

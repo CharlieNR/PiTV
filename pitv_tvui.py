@@ -850,6 +850,227 @@ def _draw_music(canvas, state):
 
     _label(d, (640, 665), "BACK   RETURN TO PiTV", 14, MUTED, True, anchor="mm")
 
+
+def _imposter_header(canvas, title, tag="PARTY GAME"):
+    d = ImageDraw.Draw(canvas)
+    logo = pitv_artwork.load_icon("monitor", size=30)
+    canvas.paste(logo, (42, 20), logo)
+    _label(d, (82, 22), "PiTV", 23, WHITE, True)
+    _label(d, (158, 28), title, 15, (119, 190, 255), True)
+    _pill(canvas, (1000, 18, 1236, 56), tag, (27, 61, 96), WHITE, 11)
+    d = ImageDraw.Draw(canvas)
+    d.line((40, 70, 1240, 70), fill=(35, 59, 94), width=1)
+    return d
+
+
+def _imposter_footer(draw, text):
+    _label(draw, (640, 681), text, 14, MUTED, True, anchor="mm")
+
+
+def _draw_imposter_word(canvas, state):
+    d = _imposter_header(canvas, "IMPOSTER  /  SECRET WORD", "WORD SELECTION")
+    d.rounded_rectangle((128, 116, 1152, 602), radius=28, fill=(10, 20, 43),
+                        outline=(39, 67, 108), width=2)
+    icon = pitv_artwork.load_icon("scroll-text", size=72)
+    canvas.paste(icon, (604, 152), icon)
+    d = ImageDraw.Draw(canvas)
+    _label(d, (640, 269), "EVERYONE IS CONNECTED", 29, WHITE, True, anchor="mm")
+    _label(d, (640, 323), "The word chooser is selecting the secret word on their phone.", 18,
+           (187, 205, 231), anchor="mm")
+    _label(d, (640, 360), "The imposter will not receive the word.", 17, MUTED, anchor="mm")
+    picker = str(state.get("word_picker") or "").strip()
+    if picker:
+        _pill(canvas, (390, 411, 890, 463), "WORD CHOOSER  ·  " + picker[:30],
+              (24, 62, 105), WHITE, 15)
+        d = ImageDraw.Draw(canvas)
+    players = state.get("players") or []
+    _label(d, (640, 510), f"{len(players)} PLAYERS  ·  WAITING FOR WORD", 14,
+           (119, 190, 255), True, anchor="mm")
+    _imposter_footer(d, "THE WORD WILL APPEAR ON PHONES  ·  BACK: END GAME")
+
+
+def _draw_imposter_turn(canvas, state):
+    round_number = max(1, int(state.get("round_number", 1) or 1))
+    turn_index = max(0, int(state.get("turn_index", 0) or 0))
+    player_count = max(1, int(state.get("player_count", len(state.get("players") or []) or 1)))
+    current_turn = str(state.get("current_turn") or "NEXT PLAYER")
+    d = _imposter_header(canvas, f"IMPOSTER  /  CLUE ROUND {round_number:02d}", "PLAYER TURN")
+    _label(d, (640, 112), f"PLAYER {min(turn_index + 1, player_count)} OF {player_count}",
+           15, (119, 190, 255), True, anchor="mm")
+    d.rounded_rectangle((190, 158, 1090, 463), radius=30, fill=(10, 20, 43),
+                        outline=(48, 100, 160), width=3)
+    _pill(canvas, (510, 185, 770, 225), "IT'S YOUR TURN", (19, 80, 95), WHITE, 13)
+    d = ImageDraw.Draw(canvas)
+    name = current_turn.upper()
+    name_size = 50 if len(name) <= 15 else 38 if len(name) <= 22 else 29
+    _label(d, (640, 294), name, name_size, WHITE, True, anchor="mm")
+    _label(d, (640, 356), "GIVE ONE CLUE", 20, (119, 190, 255), True, anchor="mm")
+    _label(d, (640, 395), "Don't say the secret word. Keep your role secret.", 16,
+           (187, 205, 231), anchor="mm")
+    progress_x, progress_y, progress_w = 300, 500, 680
+    d.rounded_rectangle((progress_x, progress_y, progress_x+progress_w, progress_y+12),
+                        radius=6, fill=(22, 36, 59))
+    d.rounded_rectangle((progress_x, progress_y,
+                         progress_x + int(progress_w * min(1.0, (turn_index + 1) / player_count)),
+                         progress_y+12), radius=6, fill=CYAN)
+    _imposter_footer(d, "SELECT / RIGHT  NEXT PLAYER     ·     BACK  PREVIOUS PLAYER")
+
+
+def _draw_imposter_round_complete(canvas, state):
+    round_number = max(1, int(state.get("round_number", 1) or 1))
+    choice = int(state.get("choice", 0) or 0)
+    d = _imposter_header(canvas, f"IMPOSTER  /  CLUE ROUND {round_number:02d}", "ROUND COMPLETE")
+    _label(d, (640, 115), "EVERYONE HAS HAD A TURN", 26, WHITE, True, anchor="mm")
+    _label(d, (640, 154), "Repeat clues as often as you like, or vote when ready.", 17,
+           MUTED, anchor="mm")
+    boxes = [(124, 218, 622, 548), (658, 218, 1156, 548)]
+    items = [
+        ("ANOTHER CLUE ROUND", "Same roles and secret word.", "repeat-2"),
+        ("START THE VOTE", "Lock in suspicions on phones.", "vote"),
+    ]
+    for idx, (box, item) in enumerate(zip(boxes, items)):
+        x0, y0, x1, y1 = box
+        title, description, icon_name = item
+        selected = idx == choice
+        d.rounded_rectangle((x0, y0, x1, y1), radius=24,
+                            fill=(24, 70, 117) if selected else PANEL,
+                            outline=CYAN if selected else (39, 63, 99),
+                            width=4 if selected else 1)
+        icon = pitv_artwork.load_icon(icon_name, size=62)
+        canvas.paste(icon, ((x0+x1-icon.width)//2, 263), icon)
+        d = ImageDraw.Draw(canvas)
+        _label(d, ((x0+x1)//2, 378), title, 20, WHITE, True, anchor="mm")
+        _label(d, ((x0+x1)//2, 428), description, 15, (187, 205, 231), anchor="mm")
+        if selected:
+            _pill(canvas, (x0+132, 475, x1-132, 511), "SELECTED", (26, 102, 163), WHITE, 11)
+            d = ImageDraw.Draw(canvas)
+    _imposter_footer(d, "UP / DOWN  CHOOSE     SELECT  CONFIRM     ·     BACK  PREVIOUS PLAYER")
+
+
+def _draw_imposter_vote(canvas, state):
+    remaining = max(0, int(state.get("seconds_remaining", 0) or 0))
+    player_count = max(1, int(state.get("player_count", 1) or 1))
+    votes_cast = max(0, int(state.get("votes_cast", 0) or 0))
+    d = _imposter_header(canvas, "IMPOSTER  /  FINAL VOTE", "VOTE OPEN")
+    d.rounded_rectangle((175, 112, 1105, 600), radius=28, fill=(10, 20, 43),
+                        outline=(39, 67, 108), width=2)
+    _label(d, (640, 171), "WHO IS THE IMPOSTER?", 25, WHITE, True, anchor="mm")
+    _label(d, (640, 243), f"{remaining:02d}", 70, GOLD if remaining <= 5 else CYAN,
+           True, anchor="mm")
+    _label(d, (640, 288), "SECONDS LEFT", 14, MUTED, True, anchor="mm")
+    progress = min(1.0, votes_cast / player_count)
+    d.rounded_rectangle((340, 347, 940, 365), radius=9, fill=(22, 36, 59))
+    if progress > 0:
+        d.rounded_rectangle((340, 347, 340 + int(600*progress), 365), radius=9, fill=CYAN)
+    _label(d, (640, 410), f"{votes_cast} OF {player_count} VOTES SUBMITTED", 16,
+           (187, 205, 231), True, anchor="mm")
+    _label(d, (640, 458), "Choose a suspect on your phone. Votes stay hidden.", 17,
+           WHITE, anchor="mm")
+    _label(d, (640, 491), "You may change your vote until the timer expires.", 15, MUTED, anchor="mm")
+    _imposter_footer(d, "BACK  RETURN TO THE LAST PLAYER'S TURN")
+
+
+def _draw_imposter_results(canvas, state):
+    stage = max(0, min(3, int(state.get("podium_stage", 0) or 0)))
+    results = sorted(list(state.get("results") or []),
+                     key=lambda item: (-int(item.get("count", 0) or 0),
+                                       str(item.get("name", "")).casefold()))
+    total_votes = sum(max(0, int(item.get("count", 0) or 0)) for item in results)
+    d = _imposter_header(canvas, "IMPOSTER  /  THE VOTE", "PODIUM REVEAL")
+    _label(d, (640, 106), "THE MOST-VOTED PLAYERS", 20, WHITE, True, anchor="mm")
+
+    base_y = 602
+    podiums = [
+        {"rank": 3, "box": (205, 472, 425, base_y), "colour": (33, 65, 102), "stage": 1},
+        {"rank": 2, "box": (855, 430, 1075, base_y), "colour": (32, 99, 125), "stage": 2},
+        {"rank": 1, "box": (515, 365, 765, base_y), "colour": (138, 96, 31), "stage": 3},
+    ]
+    for podium in podiums:
+        x0, y0, x1, y1 = podium["box"]
+        d.rounded_rectangle((x0, y0, x1, y1), radius=16, fill=podium["colour"],
+                            outline=(52, 91, 133), width=2)
+        d.line((x0+16, y0+8, x1-16, y0+8), fill=(100, 153, 197), width=2)
+        _label(d, ((x0+x1)//2, y1-44), str(podium["rank"]), 36, WHITE, True, anchor="mm")
+        if stage < podium["stage"]:
+            continue
+        idx = {3: 2, 2: 1, 1: 0}[podium["rank"]]
+        if idx >= len(results):
+            continue
+        item = results[idx]
+        name = str(item.get("name", "")).strip() or "UNKNOWN"
+        display_name = name.upper()
+        name_size = 24 if len(display_name) <= 13 else 18 if len(display_name) <= 19 else 14
+        label_y = y0 - 49
+        _label(d, ((x0+x1)//2, label_y), display_name, name_size, WHITE, True, anchor="mm")
+        _label(d, ((x0+x1)//2, label_y+24),
+               f"{max(0, int(item.get('count', 0) or 0))} VOTES", 13,
+               GOLD if podium["rank"] == 1 else CYAN, True, anchor="mm")
+
+    if total_votes == 0:
+        _label(d, (640, 178), "NO VOTES CAST", 27, WHITE, True, anchor="mm")
+        _label(d, (640, 217), "The actual imposter will be revealed next.", 16, MUTED, anchor="mm")
+    elif stage == 0:
+        _label(d, (640, 179), "THE VOTES ARE IN", 26, WHITE, True, anchor="mm")
+        _label(d, (640, 218), "Revealing the podium from third place to first…", 16, MUTED, anchor="mm")
+    elif stage == 1:
+        _label(d, (640, 177), "THIRD PLACE REVEALED", 25, WHITE, True, anchor="mm")
+    elif stage == 2:
+        _label(d, (640, 177), "SECOND PLACE REVEALED", 25, WHITE, True, anchor="mm")
+    else:
+        tied = (len(results) > 1 and int(results[0].get("count", 0) or 0) ==
+                int(results[1].get("count", 0) or 0))
+        _label(d, (640, 177), "TIE FOR MOST VOTES" if tied else "MOST VOTES REVEALED",
+               25, GOLD if tied else WHITE, True, anchor="mm")
+    _imposter_footer(d, "PODIUM PLACES ARE REVEALED ONE AT A TIME")
+
+
+def _draw_imposter_revealed(canvas, state):
+    imposter_name = str(state.get("imposter") or "UNKNOWN").strip()
+    word = str(state.get("word") or "").strip()
+    results = list(state.get("results") or [])
+    total_votes = sum(max(0, int(item.get("count", 0) or 0)) for item in results)
+    ranked = sorted(results, key=lambda item: (-int(item.get("count", 0) or 0),
+                                                str(item.get("name", "")).casefold()))
+    top_names = []
+    if ranked and int(ranked[0].get("count", 0) or 0) > 0:
+        high = int(ranked[0].get("count", 0) or 0)
+        top_names = [str(item.get("name", "")) for item in ranked
+                     if int(item.get("count", 0) or 0) == high]
+    caught = imposter_name in top_names
+    d = _imposter_header(canvas, "IMPOSTER  /  FINAL REVEAL", "GAME REVEALED")
+    d.rounded_rectangle((150, 111, 1130, 611), radius=28, fill=(10, 20, 43),
+                        outline=(39, 67, 108), width=2)
+    tag = "THE GROUP CAUGHT THEM" if caught and total_votes else "THE IMPOSTER ESCAPED" if total_votes else "NO VOTES WERE CAST"
+    _pill(canvas, (380, 139, 900, 182), tag,
+          (20, 91, 65) if caught and total_votes else (103, 42, 48) if total_votes else (43, 59, 79),
+          WHITE, 14)
+    d = ImageDraw.Draw(canvas)
+    _label(d, (640, 238), "THE IMPOSTER WAS", 18, (255, 137, 150), True, anchor="mm")
+    name_size = 44 if len(imposter_name) <= 14 else 32 if len(imposter_name) <= 22 else 24
+    _label(d, (640, 300), imposter_name.upper(), name_size, WHITE, True, anchor="mm")
+    _label(d, (640, 370), "THE SECRET WORD", 14, (119, 190, 255), True, anchor="mm")
+    _label(d, (640, 412), word.upper() if word else "UNKNOWN", 30, GOLD, True, anchor="mm")
+    _label(d, (640, 475), "SELECT TO DEAL NEW ROLES AND A NEW WORD", 15,
+           (187, 205, 231), True, anchor="mm")
+    _imposter_footer(d, "SELECT  NEW GAME     ·     BACK  END GAME")
+
+
+def _draw_imposter_error(canvas, state):
+    title = str(state.get("error_title") or "IMPOSTER ERROR")
+    message = str(state.get("error_message") or "PiTV could not display this screen.")
+    url = str(state.get("join_url") or "")
+    d = _imposter_header(canvas, "IMPOSTER  /  DISPLAY STATUS", "ATTENTION")
+    icon = pitv_artwork.load_icon("alert-triangle", size=62)
+    canvas.paste(icon, (609, 169), icon)
+    d = ImageDraw.Draw(canvas)
+    _label(d, (640, 278), title.upper(), 27, WHITE, True, anchor="mm")
+    _label(d, (640, 332), message, 17, (187, 205, 231), anchor="mm")
+    if url:
+        url_text = url if len(url) < 112 else url[:109] + "..."
+        _label(d, (640, 385), url_text, 14, CYAN, anchor="mm")
+    _imposter_footer(d, "CHECK THE PI TV LOG FOR DETAILS")
+
+
 def _draw_overlay(canvas, overlay):
     if not overlay:
         return
@@ -908,6 +1129,20 @@ def render(state, log_fn=None):
         _draw_keypad(canvas, state)
     elif view == "MUSIC":
         _draw_music(canvas, state)
+    elif view == "IMPOSTER_WORD":
+        _draw_imposter_word(canvas, state)
+    elif view == "IMPOSTER_TURN":
+        _draw_imposter_turn(canvas, state)
+    elif view == "IMPOSTER_ROUND_COMPLETE":
+        _draw_imposter_round_complete(canvas, state)
+    elif view == "IMPOSTER_VOTE":
+        _draw_imposter_vote(canvas, state)
+    elif view == "IMPOSTER_RESULTS":
+        _draw_imposter_results(canvas, state)
+    elif view == "IMPOSTER_REVEALED":
+        _draw_imposter_revealed(canvas, state)
+    elif view == "IMPOSTER_ERROR":
+        _draw_imposter_error(canvas, state)
     elif view in ("CLEAR", "FAKE_OFF"):
         canvas = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     else:

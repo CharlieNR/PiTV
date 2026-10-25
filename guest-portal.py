@@ -880,7 +880,7 @@ def imposter_join_body(game_id):
  function render(s){
   authBox.hidden=true;playBox.hidden=false;
   var phase=s.phase||'ended',role=s.role||'';
-  heading.textContent='Imposter · Round '+(s.round_number||1)+'/'+(s.rounds_per_game||3);
+  heading.textContent='Imposter · Clue round '+(s.round_number||1);
   var signature=phase+'|'+role+'|'+(s.round_number||1)+'|'+(s.current_turn||'');
   if(signature!==lastRenderKey){
    lastRenderKey=signature;content.replaceChildren();sub.textContent='';
@@ -973,7 +973,7 @@ def imposter_join_body(game_id):
     }
    }else if(phase==='round_complete'){
     content.appendChild(el('div','ROUND COMPLETE','imposter-role pick'));
-    content.appendChild(el('p','The host can start the vote now or continue for another clue round with the same roles and word.','imposter-note'));
+    content.appendChild(el('p','Continue with as many clue rounds as you like using the same roles and word, or start the vote when you are ready.','imposter-note'));
    }else if(phase==='vote'){
     content.appendChild(el('p','Who do you think is the imposter? You may change your vote until time runs out.','imposter-note'));
     var cd=el('p','15 seconds left','imposter-countdown');cd.id='voteCountdown';content.appendChild(cd);
