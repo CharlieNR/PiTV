@@ -327,9 +327,11 @@ def _start_system_action(action: str) -> None:
         message = "Raspberry Pi reboot requested."
     else:
         raise RuntimeError("Unsupported system action.")
-    _systemd_run(unit, argv)
+    # Publish before launch: restarting pitv-menu can stop the caller's service
+    # cgroup almost immediately after systemd has accepted the transient unit.
     _write_status("queued", message)
     _append_log(message)
+    _systemd_run(unit, argv)
 
 
 def _print_status() -> None:
