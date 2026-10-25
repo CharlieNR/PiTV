@@ -129,7 +129,9 @@ def _pack_with_pillow_math(canvas: Image.Image, info: dict[str, Any]):
                 if length <= 0:
                     return "0"
                 maximum = (1 << length) - 1
-                return "(((" + name + " * " + str(maximum) + " + 127) / 255) << " + str(offset) + ")"
+                # Convert back to an integer image before bit shifting; older
+                # Pillow ImageMath versions may otherwise fall back to Python loops.
+                return "((int((" + name + " * " + str(maximum) + " + 127) / 255)) << " + str(offset) + ")"
             terms = [term("R", red), term("G", green), term("B", blue)]
             if alpha:
                 terms.append(str(alpha))

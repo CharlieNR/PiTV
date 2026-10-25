@@ -878,7 +878,7 @@ def render(state, log_fn=None):
     _LAST_PREPARED = prepared
     _LAST_SIGNATURE = signature
     total_elapsed = time.monotonic() - total_started
-    if log_fn is not None and total_elapsed >= 0.5:
+    if log_fn is not None:
         try:
             log_fn(
                 "V2 graphic render {:.2f}s (draw {:.2f}s, scale {:.2f}s, "
