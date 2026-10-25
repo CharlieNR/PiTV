@@ -122,9 +122,9 @@ The on-TV PIN keypad can still be navigated with the Apple Remote's arrows, Sele
 
 ### Imposter party game
 
-Select **IMPOSTER** at the top of the Games Library. Choose the number of players, then enter each player's unique six-digit PIN. The TV displays a QR code that players scan; each player enters their PIN again on their own phone. One person is randomly assigned the imposter and a different player chooses a word. The imposter does not see the word. Everyone else sees it privately on their phone.
+Select **IMPOSTER** at the top of the Games Library. Choose the number of players, then enter each player's unique six-digit PIN. The TV displays a QR code that players scan; each player enters their PIN again on their own phone. One person is randomly assigned the imposter and a different player chooses the category and then a word from that category. The imposter receives the category but never the secret word; the other players receive the word privately on their phones.
 
-The TV tracks each player's turn. After one full round, select **GO ROUND AGAIN** to assign new roles and a new word, or select **VOTE**. Voting lasts 15 seconds; players can change their vote until the timer ends. The TV animates all vote counts from least to most (players with zero votes are hidden), waits five seconds, then reveals the actual imposter. All game state stays on the Pi; no external game service is used.
+The built-in offline categories are Animals, Food & Drink, Countries, Nature & Weather, Space, Sports, Technology, Transport, Mythical Creatures and Everyday Objects. The TV tracks each player's turn. After one full round, select **GO ROUND AGAIN** to continue clue rounds with the same category and word, or select **VOTE**. Voting lasts 15 seconds; players can change their vote until the timer ends. The TV reveals the vote podium and then reveals the imposter, category and secret word. All game state and word lists stay on the Pi; no external game service is used.
 
 ### Set a personal emergency code
 
