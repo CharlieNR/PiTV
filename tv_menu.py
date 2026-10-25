@@ -4277,6 +4277,26 @@ def _settings_maintenance_status():
         return {"status": "idle", "message": "No maintenance task this boot"}
 
 
+def _settings_complete_authorisation():
+    """Keep the published default code from authorising administrative actions."""
+    global settings_authorized_until, settings_auth_entered, settings_page
+    global settings_selected, current_view
+    settings_authorized_until = time.monotonic() + 300.0
+    settings_auth_entered = ""
+    if pitv_secrets.is_default_emergency_code():
+        settings_page = "SYSTEM"
+        settings_selected = 6  # Change admin code
+        current_view = "SETTINGS"
+        _settings_set_message(
+            "Set a private admin code before using protected Settings."
+        )
+    else:
+        settings_page = settings_pending_page
+        settings_selected = 0
+        current_view = "SETTINGS"
+        _settings_set_message("Authorised for five minutes.")
+
+
 def _settings_current_items():
     """Build the visible menu dynamically from real device state."""
     page = settings_page
@@ -4819,6 +4839,14 @@ def _settings_select_action(item):
     if not item or len(item) < 4:
         return
     action = str(item[3])
+    if (pitv_secrets.is_default_emergency_code()
+            and settings_page in _SETTINGS_PROTECTED_PAGES
+            and action not in ("CHANGE_EMERGENCY_CODE", "SHOW_VERSION", "MAINT_STATUS", "BACK", "BACK_HOME")):
+        settings_page = "SYSTEM"
+        settings_selected = 6  # Change admin code
+        current_view = "SETTINGS"
+        _settings_set_message("Set a private admin code before using protected Settings.")
+        return
     if (settings_page in _SETTINGS_PROTECTED_PAGES
             and time.monotonic() >= settings_authorized_until
             and action not in ("BACK", "BACK_HOME")):
@@ -5292,14 +5320,7 @@ def main(stdscr):
                         settings_auth_entered = settings_auth_entered[:-1]
                     elif key == "OK":
                         if pitv_secrets.check_emergency_code(settings_auth_entered):
-                            settings_authorized_until = time.monotonic()+300.0
-                            settings_page = settings_pending_page
-                            settings_selected = 0
-                            current_view = "SETTINGS"
-                            settings_auth_entered = ""
-                            _settings_set_message("Authorised for five minutes.")
-                            if pitv_secrets.is_default_emergency_code():
-                                _settings_set_message("Warning: the admin code is still public default 000000.")
+                            _settings_complete_authorisation()
                         else:
                             settings_auth_entered = ""
                             _settings_set_message("Incorrect code. Try again.")
@@ -5307,14 +5328,7 @@ def main(stdscr):
                         settings_auth_entered += key
                         if len(settings_auth_entered) == 6:
                             if pitv_secrets.check_emergency_code(settings_auth_entered):
-                                settings_authorized_until = time.monotonic()+300.0
-                                settings_page = settings_pending_page
-                                settings_selected = 0
-                                current_view = "SETTINGS"
-                                settings_auth_entered = ""
-                                _settings_set_message("Authorised for five minutes.")
-                                if pitv_secrets.is_default_emergency_code():
-                                    _settings_set_message("Warning: the admin code is still public default 000000.")
+                                _settings_complete_authorisation()
                             else:
                                 settings_auth_entered = ""
                                 _settings_set_message("Incorrect code. Try again.")
