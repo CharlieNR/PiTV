@@ -879,27 +879,37 @@ def _imposter_footer(draw, text):
 
 
 def _draw_imposter_word(canvas, state):
-    d = _imposter_header(canvas, "IMPOSTER  /  SECRET WORD", "WORD SELECTION")
+    selection_stage = str(state.get("selection_stage") or "word").strip().lower()
+    category_stage = selection_stage == "category"
+    screen_title = "IMPOSTER  /  CHOOSE CATEGORY" if category_stage else "IMPOSTER  /  CHOOSE WORD"
+    status_tag = "CATEGORY SELECTION" if category_stage else "WORD SELECTION"
+    d = _imposter_header(canvas, screen_title, status_tag)
     d.rounded_rectangle((128, 116, 1152, 602), radius=28, fill=(10, 20, 43),
                         outline=(39, 67, 108), width=2)
     icon = pitv_artwork.load_icon("scroll-text", size=72)
     canvas.paste(icon, (604, 152), icon)
     d = ImageDraw.Draw(canvas)
     _label(d, (640, 269), "EVERYONE IS CONNECTED", 29, WHITE, True, anchor="mm")
-    _label(d, (640, 323), "The word chooser is selecting the secret word on their phone.", 18,
-           (187, 205, 231), anchor="mm")
-    _label(d, (640, 360), "The imposter will not receive the word.", 17, MUTED, anchor="mm")
+    if category_stage:
+        _label(d, (640, 323), "The word chooser is selecting a category on their phone.", 18,
+               (187, 205, 231), anchor="mm")
+        _label(d, (640, 360), "Next, they will choose a word from that category.", 17, MUTED, anchor="mm")
+        waiting = "PICKING CATEGORY"
+    else:
+        _label(d, (640, 323), "The word chooser is selecting a word on their phone.", 18,
+               (187, 205, 231), anchor="mm")
+        _label(d, (640, 360), "Regular players get the word; the imposter gets only the category.", 17,
+               MUTED, anchor="mm")
+        waiting = "PICKING WORD"
     picker = str(state.get("word_picker") or "").strip()
     if picker:
         _pill(d, (390, 411, 890, 463), "WORD CHOOSER  ·  " + picker[:30],
               (24, 62, 105), WHITE, 15)
         d = ImageDraw.Draw(canvas)
     players = state.get("players") or []
-    _label(d, (640, 510), f"{len(players)} PLAYERS  ·  WAITING FOR WORD", 14,
+    _label(d, (640, 510), f"{len(players)} PLAYERS  ·  {waiting}", 14,
            (119, 190, 255), True, anchor="mm")
-    _imposter_footer(d, "THE WORD WILL APPEAR ON PHONES  ·  BACK: END GAME")
-
-
+    _imposter_footer(d, "CATEGORY AND WORD ARE SELECTED ON PHONES  ·  BACK: END GAME")
 def _draw_imposter_turn(canvas, state):
     round_number = max(1, int(state.get("round_number", 1) or 1))
     turn_index = max(0, int(state.get("turn_index", 0) or 0))
@@ -1038,6 +1048,7 @@ def _draw_imposter_results(canvas, state):
 def _draw_imposter_revealed(canvas, state):
     imposter_name = str(state.get("imposter") or "UNKNOWN").strip()
     word = str(state.get("word") or "").strip()
+    category = str(state.get("category") or "").strip()
     results = list(state.get("results") or [])
     total_votes = sum(max(0, int(item.get("count", 0) or 0)) for item in results)
     ranked = sorted(results, key=lambda item: (-int(item.get("count", 0) or 0),
@@ -1052,20 +1063,22 @@ def _draw_imposter_revealed(canvas, state):
     d.rounded_rectangle((150, 111, 1130, 611), radius=28, fill=(10, 20, 43),
                         outline=(39, 67, 108), width=2)
     tag = "THE GROUP CAUGHT THEM" if caught and total_votes else "THE IMPOSTER ESCAPED" if total_votes else "NO VOTES WERE CAST"
-    _pill(d, (380, 139, 900, 182), tag,
+    _pill(d, (380, 129, 900, 170), tag,
           (20, 91, 65) if caught and total_votes else (103, 42, 48) if total_votes else (43, 59, 79),
           WHITE, 14)
     d = ImageDraw.Draw(canvas)
-    _label(d, (640, 238), "THE IMPOSTER WAS", 18, (255, 137, 150), True, anchor="mm")
-    name_size = 44 if len(imposter_name) <= 14 else 32 if len(imposter_name) <= 22 else 24
-    _label(d, (640, 300), imposter_name.upper(), name_size, WHITE, True, anchor="mm")
-    _label(d, (640, 370), "THE SECRET WORD", 14, (119, 190, 255), True, anchor="mm")
-    _label(d, (640, 412), word.upper() if word else "UNKNOWN", 30, GOLD, True, anchor="mm")
-    _label(d, (640, 475), "SELECT TO DEAL NEW ROLES AND A NEW WORD", 15,
+    _label(d, (640, 211), "THE IMPOSTER WAS", 16, (255, 137, 150), True, anchor="mm")
+    name_size = 36 if len(imposter_name) <= 14 else 28 if len(imposter_name) <= 22 else 22
+    _label(d, (640, 247), imposter_name.upper(), name_size, WHITE, True, anchor="mm")
+    _label(d, (640, 302), "THE CATEGORY", 13, (119, 190, 255), True, anchor="mm")
+    category_size = 25 if len(category) <= 18 else 20
+    _label(d, (640, 334), category.upper() if category else "UNKNOWN", category_size, CYAN, True, anchor="mm")
+    _label(d, (640, 386), "THE SECRET WORD", 13, (119, 190, 255), True, anchor="mm")
+    word_size = 28 if len(word) <= 18 else 22 if len(word) <= 28 else 18
+    _label(d, (640, 421), word.upper() if word else "UNKNOWN", word_size, GOLD, True, anchor="mm")
+    _label(d, (640, 486), "SELECT TO DEAL A NEW CATEGORY AND WORD", 14,
            (187, 205, 231), True, anchor="mm")
     _imposter_footer(d, "SELECT  NEW GAME     ·     BACK  END GAME")
-
-
 def _draw_imposter_error(canvas, state):
     title = str(state.get("error_title") or "IMPOSTER ERROR")
     message = str(state.get("error_message") or "PiTV could not display this screen.")
