@@ -57,6 +57,36 @@ class CarouselSmokeTests(unittest.TestCase):
         self.assertEqual(strip.size, (pitv_tvui.WIDTH, 295))
         self.assertEqual(strip.mode, "RGB")
 
+    def test_home_warmup_primes_transition_frames_without_framebuffer_writes(self):
+        items = [
+            ("TETRIS", "TETRIS", "Puzzle game"),
+            ("SPACE INVADERS", "INVADERS", "Arcade game"),
+            ("IMPOSTER", "IMPOSTER", "Party game"),
+            ("2048", "2048", "Number puzzle"),
+        ]
+        canvas = Image.new("RGB", (pitv_tvui.WIDTH, pitv_tvui.HEIGHT))
+        with (
+            patch.object(pitv_tvui, "_background", return_value=canvas),
+            patch.object(pitv_tvui, "_nav"),
+            patch.object(pitv_tvui, "_draw_home"),
+            patch.object(
+                pitv_tvui, "_draw_carousel_strip",
+                return_value=Image.new("RGB", (pitv_tvui.WIDTH, 295)),
+            ) as draw_strip,
+            patch.object(pitv_tvui.pitv_framebuffer, "display_image_region") as write_region,
+            patch.object(pitv_tvui.pitv_framebuffer, "display_prepared_frame") as write_full,
+        ):
+            stats = pitv_tvui.warm_render_cache(
+                home_items=[("GAMES", "GAMES", "Open games")],
+                carousel_games=items,
+                recent_games=[],
+            )
+
+        self.assertEqual(draw_strip.call_count, 6)
+        self.assertEqual(stats["carousel_games"], 4)
+        write_region.assert_not_called()
+        write_full.assert_not_called()
+
     def test_index_tracks_the_most_focused_card(self):
         pitv_tvui._CAROUSEL["position"] = 1.4
         self.assertEqual(pitv_tvui.carousel_index(), 1)
