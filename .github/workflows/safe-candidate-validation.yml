@@ -1,0 +1,65 @@
+name: PiTV safe updater candidate validation
+
+on:
+  push:
+    branches:
+      - safe-update-terminal-startup
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Python and shell syntax plus menu tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import py_compile
+          files = sorted(Path(".").glob("*.py"))
+          if not files:
+              raise SystemExit("No Python files found")
+          for path in files:
+              py_compile.compile(str(path), doraise=True)
+              print(f"OK {path}")
+          PY
+      - name: Install framebuffer-independent test dependency
+        run: python -m pip install --disable-pip-version-check Pillow
+      - name: Validate bundled SVG icon assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          import pitv_artwork
+
+          required = set(pitv_artwork.ICON_MAP.values()) | set(pitv_artwork._STANDALONE_UI_ICONS)
+          icon_dir = Path("assets/icons")
+          missing = sorted(name for name in required if not (icon_dir / f"{name}.svg").is_file())
+          if missing:
+              raise SystemExit("Missing bundled SVG icons: " + ", ".join(missing))
+          for name in sorted(required):
+              ET.parse(icon_dir / f"{name}.svg")
+          print(f"Validated {len(required)} required SVG icons.")
+          PY
+      - name: Run hardware-free carousel and menu tests
+        env:
+          PITV_STATE_FILE: ${{ runner.temp }}/pitv-test-state.json
+        run: python -m unittest -v test_pitv_carousel test_pitv_menu_logic test_pitv_maintenance
+      - name: Check shell syntax
+        run: |
+          set -eu
+          for file in screen ./*.sh; do
+            [ -f "$file" ] || continue
+            bash -n "$file"
+            echo "OK $file"
+          done
