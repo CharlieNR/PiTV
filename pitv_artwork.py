@@ -144,6 +144,7 @@ _STANDALONE_UI_ICONS = {
     "lock-keyhole",
     "monitor",
     "scroll-text",
+    "settings",
     "user-round",
 }
 
