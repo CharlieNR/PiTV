@@ -5841,6 +5841,7 @@ def main(stdscr):
                     "durations": [label.upper() for label, _seconds in DURATION_OPTIONS],
                     "carousel_games": _graphic_carousel,
                     "carousel_index": pitv_tvui.carousel_index() if pitv_tvui is not None else 0,
+                    "carousel_revision": pitv_tvui.carousel_revision() if pitv_tvui is not None else 0,
                     "carousel_autoplay": _graphic_autoplay,
                     "carousel_interval": _graphic_interval,
                     "recent_games": _graphic_recent,
