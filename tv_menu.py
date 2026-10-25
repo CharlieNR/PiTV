@@ -4799,6 +4799,11 @@ def _settings_select_action(item):
         _settings_begin_confirmation("GUEST_KICK", "Sign out every guest session?")
     elif action == "SHOW_VERSION":
         _settings_set_message(f"PiTV {VERSION}; menu interface V{UI_VERSION}.")
+    elif action == "MAINT_STATUS":
+        status = _settings_maintenance_status()
+        _settings_set_message(
+            f"{str(status.get('status', 'idle')).upper()}: {status.get('message', 'No maintenance task this boot')}"
+        )
     elif action == "CONFIRM_UPDATE_EXPERIMENTAL":
         _settings_begin_confirmation("UPDATE_EXPERIMENTAL", "Update from experimental? Settings will be backed up.")
     elif action == "CONFIRM_UPDATE_STABLE":
