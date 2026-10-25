@@ -713,8 +713,9 @@ def listen_fifo():
                     # process owns the CEC bus, so cec-cmd.sh can free and reuse
                     # it regardless of which user Homebridge runs as.
                     if cmd in ("TV_ON", "TV_OFF"):
-                        # Apply the requested state immediately; the CEC listener
-                        # will correct it if the TV does not acknowledge the change.
+                        # Power-only request: do not broadcast Active Source or
+                        # select HDMI 2. The TV may be showing Sky or another input.
+                        # The CEC listener corrects state if the TV disagrees.
                         log(f"TV power request: {cmd}")
                         _set_tv_power("on" if cmd == "TV_ON" else "off")
                         _run_cec_cmd("on 0" if cmd == "TV_ON" else "standby 0")
@@ -849,6 +850,7 @@ def listen_fifo():
 
 TV_STATE_FILE  = "/tmp/pitv-tv-state"
 TV_INPUT_FILE  = "/tmp/pitv-tv-input"
+TV_UI_STATE_FILE = "/tmp/pitv-ui-state"
 GAME_STATE_FILE = "/tmp/pitv-game-state"
 PIN_ENTRY_STATE_FILE = "/tmp/pitv-pin-entry-state"
 PIN_ENTRY_LEASE_PATH = os.path.join(os.path.expanduser("~/.pitv"), "pin-entry-lease.json")
@@ -871,10 +873,28 @@ def _set_external_game_state(active: bool) -> None:
 
 tv_power_state = "unknown"
 tv_input_phys  = None
+# Describes the PiTV interface, not the operating-system power state.
+tv_ui_state = "starting"
 # True while the PiTV interface is in its low-activity TV-standby state. The
 # CEC listener and command/control services intentionally remain available so
 # that a TV-on event can wake the interface without rebooting the Raspberry Pi.
 tv_power_sleeping = False
+
+
+def _set_tv_ui_state(state, *, force=False):
+    """Publish the UI state for the read-only screen status command."""
+    global tv_ui_state
+    state = str(state).strip().lower()
+    if state not in {"starting", "active", "sleeping"}:
+        state = "unknown"
+    if not force and state == tv_ui_state:
+        return
+    tv_ui_state = state
+    try:
+        with open(TV_UI_STATE_FILE, "w", encoding="ascii") as handle:
+            handle.write(state)
+    except OSError:
+        pass
 
 
 def _set_tv_power(state):
@@ -949,6 +969,8 @@ def listen_cec_remote():
                     elif key in ("select","enter"):          input_queue.append("SELECT")
                     elif key in ("exit","back","clear","return"): input_queue.append("BACK")
                 # ── TV power state (from the pow poll or the TV's own reports) ──
+                # Power reports update state only. Do not emit Active Source or
+                # Set Stream Path on wake; the TV must keep its current HDMI input.
                 elif "power status:" in low:
                     if "standby" in low:   _set_tv_power("off")
                     elif "on" in low:      _set_tv_power("on")
@@ -5151,6 +5173,10 @@ def main(stdscr):
     global controller_mode, fake_off_active, force_home_requested
     global _GRAPHIC_UI_FAILED, tv_power_sleeping
 
+    # Replace any marker left by a previous process; status must not report
+    # a stale sleep state if the menu service has just restarted.
+    _set_tv_ui_state("starting", force=True)
+
     curses.curs_set(0)
     stdscr.nodelay(True)
     stdscr.idlok(False); stdscr.idcok(False)
@@ -5240,6 +5266,7 @@ def main(stdscr):
                 except Exception as exc:
                     log(f"TV-off display clear failed: {type(exc).__name__}: {exc}")
                 last_view = None
+                _set_tv_ui_state("sleeping")
                 log("TV is in standby; PiTV interface sleeping. Raspberry Pi and wake controls remain on.")
             # A slow idle loop avoids drawing animated frames while the TV is off.
             time.sleep(1.0)
@@ -5255,7 +5282,11 @@ def main(stdscr):
             input_queue.clear()
             _reset_graphic_ui_cache()
             last_view = None
+            _set_tv_ui_state("active")
             log("TV is on; PiTV interface resumed.")
+        elif tv_power_state == "on" and tv_ui_state != "active":
+            # Startup can begin with the TV already on, before a sleep transition.
+            _set_tv_ui_state("active")
 
         if settings_message and settings_message_until and time.monotonic() >= settings_message_until:
             settings_message = ""

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 import unittest
 from unittest.mock import mock_open, patch
@@ -149,10 +150,14 @@ class TVPowerSleepRequestTests(unittest.TestCase):
 
     def setUp(self):
         self.old_power_state = tv_menu.tv_power_state
+        self.old_tv_input = tv_menu.tv_input_phys
+        self.old_ui_state = tv_menu.tv_ui_state
         self.old_input_queue = list(tv_menu.input_queue)
 
     def tearDown(self):
         tv_menu.tv_power_state = self.old_power_state
+        tv_menu.tv_input_phys = self.old_tv_input
+        tv_menu.tv_ui_state = self.old_ui_state
         tv_menu.input_queue[:] = self.old_input_queue
 
     def test_new_standby_state_requests_foreground_activity_exit(self):
@@ -174,15 +179,32 @@ class TVPowerSleepRequestTests(unittest.TestCase):
 
         self.assertEqual(tv_menu.input_queue, ["SELECT"])
 
-    def test_tv_power_on_publishes_wake_state(self):
+    def test_tv_power_on_does_not_change_input_or_send_cec(self):
         tv_menu.tv_power_state = "off"
+        tv_menu.tv_input_phys = "10:00"
         tv_menu.input_queue[:] = ["HOME"]
 
-        with patch.object(tv_menu, "TV_STATE_FILE", "/dev/null"), patch.object(tv_menu, "log"):
+        with (
+            patch.object(tv_menu, "TV_STATE_FILE", "/dev/null"),
+            patch.object(tv_menu, "_run_cec_cmd") as cec_command,
+            patch.object(tv_menu, "log"),
+        ):
             tv_menu._set_tv_power("on")
 
         self.assertEqual(tv_menu.tv_power_state, "on")
+        self.assertEqual(tv_menu.tv_input_phys, "10:00")
         self.assertEqual(tv_menu.input_queue, ["HOME"])
+        cec_command.assert_not_called()
+
+    def test_ui_state_publisher_writes_sleeping_state(self):
+        old_state = tv_menu.tv_ui_state
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = f"{temp_dir}/pitv-ui-state"
+            with patch.object(tv_menu, "TV_UI_STATE_FILE", state_path):
+                tv_menu._set_tv_ui_state("sleeping", force=True)
+                with open(state_path, encoding="ascii") as handle:
+                    self.assertEqual(handle.read(), "sleeping")
+        tv_menu.tv_ui_state = old_state
 
 
 if __name__ == "__main__":

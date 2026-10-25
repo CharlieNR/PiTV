@@ -433,6 +433,16 @@ cat /tmp/pitv-mapper.log
 
 Automated tests check the state-change logic without hardware; this manual test is still necessary to verify the TV and HDMI-CEC connection.
 
+### Test TV-follow standby sleep without waking the TV
+
+1. While connected over SSH, run `screen status` and note the reported TV input.
+2. Turn the TV off using the physical remote or `screen off`.
+3. Run `screen status` again over SSH. It should report `PiTV interface: SLEEPING`, `PiTV menu service: active`, and `Raspberry Pi OS: RUNNING` after standby is detected.
+4. `screen status` is read-only: it reports the last known HDMI-CEC power/input state and does not issue a CEC command, turn the TV on, or select an HDMI input.
+5. Turn the TV back on later. PiTV's wake-state transition does not send an Active Source or Set Stream Path command, so PiTV itself does not request an input switch.
+
+The reported power/input values are the most recent CEC reports and can briefly lag behind the TV. This makes status safe to check while the TV remains off.
+
 ### TV power or input switching doesn't work
 
 - Check the HDMI cable and enable HDMI-CEC in TV settings.
