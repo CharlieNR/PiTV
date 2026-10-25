@@ -130,6 +130,20 @@ class GraphicsRecoveryTests(unittest.TestCase):
 
 
 class MaintenanceStatusTests(unittest.TestCase):
+    def test_running_status_is_preserved_for_terminal_footer(self):
+        payload = {
+            "status": "running",
+            "message": "Running update.sh experimental; live output is shown on the TV.",
+            "branch": "experimental",
+            "updated_at": int(time.time()),
+        }
+        with patch("builtins.open", mock_open(read_data=json.dumps(payload))):
+            status = tv_menu._settings_maintenance_status()
+
+        self.assertEqual(status["status"], "running")
+        self.assertEqual(status["branch"], "experimental")
+        self.assertIn("live output", status["message"])
+
     def test_up_to_date_status_is_preserved_for_settings_ui(self):
         payload = {
             "status": "up-to-date",
@@ -143,6 +157,22 @@ class MaintenanceStatusTests(unittest.TestCase):
         self.assertEqual(status["status"], "up-to-date")
         self.assertEqual(status["message"], "No new updates are available on experimental.")
         self.assertEqual(status["branch"], "experimental")
+
+
+class SettingsUpdateActionTests(unittest.TestCase):
+    def test_system_settings_exposes_terminal_and_direct_update_actions(self):
+        previous_page = tv_menu.settings_page
+        try:
+            tv_menu.settings_page = "SYSTEM"
+            items = tv_menu._settings_current_items()
+            by_action = {item[3]: item for item in items}
+            self.assertIn("VIEW_UPDATE_TERMINAL", by_action)
+            self.assertIn("UPDATE_EXPERIMENTAL", by_action)
+            self.assertIn("UPDATE_STABLE", by_action)
+            self.assertNotIn("CONFIRM_UPDATE_EXPERIMENTAL", by_action)
+            self.assertIn("terminal", by_action["UPDATE_EXPERIMENTAL"][2].lower())
+        finally:
+            tv_menu.settings_page = previous_page
 
 
 class TVPowerSleepRequestTests(unittest.TestCase):

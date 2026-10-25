@@ -433,6 +433,12 @@ cat /tmp/pitv-mapper.log
 
 Automated tests check the state-change logic without hardware; this manual test is still necessary to verify the TV and HDMI-CEC connection.
 
+### Settings updater terminal
+
+Selecting **Update experimental** or **Update stable / main** starts the same `update.sh` workflow used by `screen update` (or `screen update safe` for main). The TV switches to a plain, monospaced terminal showing the real combined updater output, including errors. The updater runs outside the menu service so its output and status survive deployment restarting that service. Press Back to hide the terminal; the update continues and can be reopened through **View updater terminal**.
+
+The updater reports “No new updates are available” only when the requested branch is checked out, the working tree is clean, and its local commit matches the freshly fetched GitHub commit.
+
 ### Test TV-follow standby sleep without waking the TV
 
 1. While connected over SSH, run `screen status` and note the reported TV input.
