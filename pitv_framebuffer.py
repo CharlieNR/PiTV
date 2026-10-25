@@ -16,6 +16,7 @@ from PIL import Image, ImageMath
 # The compiled helper lives beside this module in /opt/pitv. If it is absent
 # or fails to load, the established NumPy/Pillow converters remain available.
 _RGB565_PACKER = None
+_RGB565_SCALE_PACKER = None
 try:
     import ctypes
     _rgb565_library = ctypes.CDLL(
@@ -28,8 +29,25 @@ try:
         ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int,
     ]
     _RGB565_PACKER.restype = None
+    try:
+        _RGB565_SCALE_PACKER = _rgb565_library.pitv_scale_pack_rgb565
+        _RGB565_SCALE_PACKER.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int,
+        ]
+        _RGB565_SCALE_PACKER.restype = ctypes.c_int
+    except AttributeError:
+        # A previous compiled helper may not yet expose the combined scaler.
+        _RGB565_SCALE_PACKER = None
 except (ImportError, OSError, AttributeError):
     _RGB565_PACKER = None
+    _RGB565_SCALE_PACKER = None
+
+NATIVE_RGB565_SCALE_PACK_AVAILABLE = _RGB565_SCALE_PACKER is not None
 
 
 def _pack_rgb565_native(
@@ -60,11 +78,58 @@ def _pack_rgb565_native(
         int(sys.byteorder == "big"),
     )
     return {
-        "frame": bytes(frame),
+        # display_prepared_frame accepts mutable buffers, so avoid copying the
+        # completed 1.8 MB RGB565 buffer into a second immutable bytes object.
+        "frame": frame,
         "info": info,
         "source_width": source_width,
         "source_height": source_height,
         "packing_method": "c-rgb565",
+    }
+
+
+def _pack_rgb565_scaled_native(
+    image: Image.Image, info: dict[str, Any],
+    source_width: int, source_height: int, target_size: tuple[int, int],
+):
+    """Fuse nearest-neighbour scaling and RGB565 packing into one C pass."""
+    if _RGB565_SCALE_PACKER is None:
+        return None
+    if (
+        image.size == (int(info["width"]), int(info["height"]))
+        or info.get("bits_per_pixel") != 16
+        or info.get("red") != (11, 5, 0)
+        or info.get("green") != (5, 6, 0)
+        or info.get("blue") != (0, 5, 0)
+        or info.get("transparency", (0, 0, 0))[1] != 0
+    ):
+        return None
+
+    width, height = int(info["width"]), int(info["height"])
+    content_width, content_height = target_size
+    offset_x = (width - content_width) // 2
+    offset_y = (height - content_height) // 2
+    line_length = int(info["line_length"])
+    xoffset_bytes = int(info["xoffset"]) * 2
+
+    rgb = image.tobytes()
+    frame = bytearray(line_length * height)
+    output_view = (ctypes.c_uint8 * len(frame)).from_buffer(frame)
+    ok = _RGB565_SCALE_PACKER(
+        ctypes.c_char_p(rgb), output_view,
+        source_width, source_height, width, height,
+        content_width, content_height, offset_x, offset_y,
+        line_length, xoffset_bytes,
+        int(sys.byteorder == "big"),
+    )
+    if not ok:
+        return None
+    return {
+        "frame": frame,
+        "info": info,
+        "source_width": source_width,
+        "source_height": source_height,
+        "packing_method": "c-rgb565-scale-pack",
     }
 
 
@@ -317,6 +382,18 @@ def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any
         max(1, min(width, round(source_width * scale))),
         max(1, min(height, round(source_height * scale))),
     )
+
+    # If the input is smaller than the framebuffer, avoid creating a second
+    # full-resolution Pillow image. The C helper scales and packs the source
+    # directly into RGB565; older helpers and unusual framebuffer formats use
+    # the established conversion path below.
+    if image.size != (width, height):
+        scaled_native = _pack_rgb565_scaled_native(
+            image, info, source_width, source_height, target_size
+        )
+        if scaled_native is not None:
+            return scaled_native
+
     if image.size == (width, height):
         # The V2 renderer already prepares a full native-size canvas. Reuse it
         # instead of allocating and copying a second full-resolution image.
@@ -441,7 +518,7 @@ def display_prepared_frame(prepared: dict[str, Any], device: str = "/dev/fb0") -
         raise PermissionError(f"Framebuffer is not readable and writable: {device}")
     captured = prepared.get("info")
     frame = prepared.get("frame")
-    if not isinstance(captured, dict) or not isinstance(frame, bytes):
+    if not isinstance(captured, dict) or not isinstance(frame, (bytes, bytearray, memoryview)):
         raise ValueError("Prepared framebuffer image is malformed.")
 
     with open(device, "r+b", buffering=0) as fb:
