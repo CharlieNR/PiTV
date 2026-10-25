@@ -4700,6 +4700,7 @@ def _settings_refresh_bluetooth():
         return
     def worker():
         log_path = "/tmp/pitv-settings-bluetooth.log"
+        proc = None
         try:
             with open(log_path, "w", encoding="utf-8") as output:
                 proc = subprocess.Popen(
@@ -4712,7 +4713,16 @@ def _settings_refresh_bluetooth():
                 proc.stdin.write("devices\nscan off\nquit\n")
                 proc.stdin.flush()
                 proc.stdin.close()
-                proc.wait(timeout=10)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                    raise RuntimeError("Bluetooth scan process did not exit cleanly.")
             proc2 = subprocess.run(["bluetoothctl", "devices"], capture_output=True,
                                    text=True, timeout=5, check=False)
             output_text = ""
@@ -4741,6 +4751,15 @@ def _settings_refresh_bluetooth():
             )
             log(f"Settings: Bluetooth scan complete ({len(settings_bt_devices)} likely controllers)")
         except Exception as exc:
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
             settings_bt_devices = []
             _settings_set_message(f"Bluetooth scan failed: {type(exc).__name__}: {exc}")
     return _settings_start_task("Bluetooth scan", worker)
