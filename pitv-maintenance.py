@@ -263,9 +263,12 @@ def _start_update(branch: str) -> None:
     except json.JSONDecodeError:
         pass
     unit = f"pitv-update-{branch}-{int(time.time())}"
-    _systemd_run(unit, [str(HELPER_PATH), "update-worker", branch])
+    # Publish before asking systemd to start the worker. The worker can start
+    # immediately and must be able to replace this with "running" without a
+    # late "queued" write racing over its progress.
     _write_status("queued", f"Update from {branch} queued.", branch)
     _append_log(f"Queued detached update from {branch}.")
+    _systemd_run(unit, [str(HELPER_PATH), "update-worker", branch])
 
 
 def _start_system_action(action: str) -> None:
