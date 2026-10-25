@@ -1680,10 +1680,12 @@ def run_imposter(stdscr,players: list[str]) -> None:
                     _imposter_render_screen({
                         "view": "IMPOSTER_REVEALED",
                         "imposter": state.get("imposter", "?"),
+                        "category": state.get("category", ""),
                         "word": state.get("word", ""),
                         "results": state.get("results", []),
                     }, "REVEAL", [
                         "THE IMPOSTER WAS: " + str(state.get("imposter", "?")).upper(),
+                        "THE CATEGORY WAS: " + str(state.get("category", "")),
                         "THE WORD WAS: " + str(state.get("word", "")),
                         "Select: new roles and word; Back: exit",
                     ])
