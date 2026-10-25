@@ -1556,6 +1556,7 @@ def _draw_clock_region(clock_text):
     background = _background().crop((left, top, right, bottom)).convert("RGB")
     d = ImageDraw.Draw(background)
     _label(d, (right-left-10, 29), clock_text, 15, MUTED, anchor="ra")
+    d.line((0, 62, right-left, 62), fill=(35, 59, 94), width=1)
     pitv_framebuffer.display_image_region(
         background, (left, top, right, bottom), source_size=(WIDTH, HEIGHT)
     )
