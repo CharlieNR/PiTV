@@ -985,6 +985,67 @@ def _draw_home(canvas, state):
 
 
 
+
+def warm_render_cache(home_items=None, carousel_games=None, recent_games=None):
+    """Prime the first V2 home render and the first carousel transition.
+
+    This intentionally does not touch the framebuffer. PiTV can leave the
+    screen blank while the persistent artwork cache is read/warmed, then the
+    first visible V2 frame should be a normal fast render rather than paying
+    first-use icon/artwork rasterisation costs during navigation.
+    """
+    started = time.monotonic()
+    if home_items is None:
+        home_items = [
+            ("FIRE", "FIRE", "A live animated text-fire effect."),
+            ("CLOCK + STARS", "CLOCK", "A large clock over a moving starfield."),
+            ("MATRIX RAIN", "MATRIX", "A flowing green-code screensaver."),
+            ("STREAM MUSIC", "MIRROR", "Stream audio from an Apple device."),
+            ("GAMES", "GAMES", "Open the games library."),
+        ]
+    if carousel_games is None:
+        carousel_games = [
+            ("TETRIS", "TETRIS", "Stack the blocks."),
+            ("SPACE INVADERS", "INVADERS", "Defend the planet."),
+            ("IMPOSTER", "IMPOSTER", "Find the secret imposter."),
+            ("2048", "2048", "Merge the numbered tiles."),
+        ]
+    if recent_games is None:
+        recent_games = []
+
+    items = [tuple(item) for item in home_items]
+    carousel = [tuple(item) for item in carousel_games]
+    recent = [tuple(item) for item in recent_games[:6]]
+    canvas = _background().copy()
+    _nav(canvas, "HOME", _display_clock_text())
+    _draw_home(canvas, {
+        "home_items": items,
+        "selected_art": 0,
+        "home_focus": "carousel",
+        "nav_selected": 0,
+        "carousel_games": carousel,
+        "carousel_index": 0,
+        "recent_games": recent,
+        "selected_recent": 0,
+    })
+
+    # Six eased positions match the production transition. Pre-fitting these
+    # images removes image-resize work from the first slide animation.
+    if len(carousel) > 1:
+        for step in range(1, 7):
+            fraction = step / 6.0
+            eased = fraction * fraction * (3.0 - 2.0 * fraction)
+            _draw_carousel_strip(carousel, eased)
+
+    return {
+        "elapsed": time.monotonic() - started,
+        "shortcuts": len(items),
+        "carousel_games": len(carousel),
+        "recent_games": len(recent),
+    }
+
+
+
 def _draw_settings(canvas, state):
     d = ImageDraw.Draw(canvas)
     _nav(canvas, "SETTINGS", state.get("clock_text", ""), False, 0)
