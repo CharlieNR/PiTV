@@ -4414,7 +4414,10 @@ def main(stdscr):
                 else:
                     pair_restore_input()
 
-        stdscr.refresh()
+        # V2 writes directly to /dev/fb0. Refreshing curses here can repaint
+        # terminal cells over the graphics and adds needless console I/O.
+        if not modern_graphic_mode:
+            stdscr.refresh()
 
         if modern_graphic_mode:
             try:
@@ -4481,7 +4484,7 @@ def main(stdscr):
                     "keypad_col": keypad_col,
                     "overlay": graphic_overlay,
                 }
-                pitv_tvui.render(_graphic_state)
+                pitv_tvui.render(_graphic_state, log_fn=log)
             except Exception as _graphic_render_exc:
                 _GRAPHIC_UI_FAILED = True
                 log(f"Graphical interface failed; switching to text fallback: {_graphic_render_exc}")

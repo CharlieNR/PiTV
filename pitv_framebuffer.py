@@ -9,7 +9,7 @@ import struct
 import sys
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageMath
 
 FBIOGET_VSCREENINFO = 0x4600
 FBIOGET_FSCREENINFO = 0x4602
@@ -25,6 +25,87 @@ def _component(value: int, offset: int, length: int, msb_right: int, label: str)
     if msb_right:
         raise RuntimeError(f"Unsupported framebuffer {label} bitfield (msb_right={msb_right}).")
     return ((value * ((1 << length) - 1) + 127) // 255) << offset
+
+def _pack_with_pillow_math(canvas: Image.Image, info: dict[str, Any]):
+    """Pack uncommon 16/32-bit framebuffer layouts in Pillow's native pixel engine."""
+    bits = int(info["bits_per_pixel"])
+    if bits not in (16, 32):
+        return None
+
+    try:
+        red_image, green_image, blue_image = (
+            channel.convert("I") for channel in canvas.split()
+        )
+        red, green, blue = info["red"], info["green"], info["blue"]
+        transparency = info["transparency"]
+        alpha = ((1 << transparency[1]) - 1) << transparency[0] if transparency[1] else 0
+
+        if hasattr(ImageMath, "lambda_eval"):
+            def component(source, field):
+                offset, length, _msb_right = field
+                if length <= 0:
+                    return 0
+                maximum = (1 << length) - 1
+                return (((source * maximum + 127) / 255) << offset)
+
+            def expression(values):
+                value = component(values["R"], red)
+                value = value | component(values["G"], green)
+                value = value | component(values["B"], blue)
+                if alpha:
+                    value = value | alpha
+                return value
+
+            packed_image = ImageMath.lambda_eval(
+                expression, R=red_image, G=green_image, B=blue_image
+            )
+        else:
+            def term(name, field):
+                offset, length, _msb_right = field
+                if length <= 0:
+                    return "0"
+                maximum = (1 << length) - 1
+                return "(((" + name + " * " + str(maximum) + " + 127) / 255) << " + str(offset) + ")"
+            terms = [term("R", red), term("G", green), term("B", blue)]
+            if alpha:
+                terms.append(str(alpha))
+            packed_image = ImageMath.eval(
+                " | ".join("(" + item + ")" for item in terms),
+                R=red_image, G=green_image, B=blue_image,
+            )
+
+        if packed_image.mode != "I":
+            packed_image = packed_image.convert("I")
+        if bits == 16:
+            raw = packed_image.convert(
+                "I;16L" if sys.byteorder == "little" else "I;16B"
+            ).tobytes()
+        else:
+            # Pillow's mode-I storage uses native-endian 32-bit integers, which
+            # matches the framebuffer's native byte order.
+            raw = packed_image.tobytes()
+
+        width, height = int(info["width"]), int(info["height"])
+        bytes_per_pixel = int(info["bytes_per_pixel"])
+        row_bytes = width * bytes_per_pixel
+        if len(raw) != row_bytes * height:
+            return None
+
+        line_length = int(info["line_length"])
+        pixel_start = int(info["xoffset"]) * bytes_per_pixel
+        frame = bytearray(line_length * height)
+        if pixel_start == 0 and line_length == row_bytes:
+            frame[:] = raw
+        else:
+            for y in range(height):
+                src = y * row_bytes
+                dst = y * line_length + pixel_start
+                frame[dst:dst + row_bytes] = raw[src:src + row_bytes]
+        return bytes(frame)
+    except (AttributeError, OverflowError, TypeError, ValueError):
+        # Keep the established generic conversion as a compatibility fallback.
+        return None
+
 
 
 def _framebuffer_info(fd: int) -> dict[str, Any]:
@@ -110,10 +191,15 @@ def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any
         max(1, min(width, round(source_width * scale))),
         max(1, min(height, round(source_height * scale))),
     )
-    if image.size != target_size:
-        image = image.resize(target_size, Image.Resampling.NEAREST)
-    canvas = Image.new("RGB", (width, height), (0, 0, 0))
-    canvas.paste(image, ((width - image.width) // 2, (height - image.height) // 2))
+    if image.size == (width, height):
+        # The V2 renderer already prepares a full native-size canvas. Reuse it
+        # instead of allocating and copying a second full-resolution image.
+        canvas = image
+    else:
+        if image.size != target_size:
+            image = image.resize(target_size, Image.Resampling.NEAREST)
+        canvas = Image.new("RGB", (width, height), (0, 0, 0))
+        canvas.paste(image, ((width - image.width) // 2, (height - image.height) // 2))
     red, green, blue = info["red"], info["green"], info["blue"]
     bytes_per_pixel = info["bytes_per_pixel"]
     line_length = info["line_length"]
@@ -152,6 +238,15 @@ def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any
                 frame[dst:dst + row_bytes] = packed[src:src + row_bytes]
         return {
             "frame": bytes(frame),
+            "info": info,
+            "source_width": source_width,
+            "source_height": source_height,
+        }
+
+    packed_frame = _pack_with_pillow_math(canvas, info)
+    if packed_frame is not None:
+        return {
+            "frame": packed_frame,
             "info": info,
             "source_width": source_width,
             "source_height": source_height,

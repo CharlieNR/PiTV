@@ -10,7 +10,10 @@ import json
 import math
 import os
 import random
+import threading
 import time
+import urllib.request
+from datetime import datetime, timezone
 from functools import lru_cache
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -35,6 +38,116 @@ _FONT_NORMAL = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 _FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 _LAST_SIGNATURE = None
 _LAST_PREPARED = None
+
+# Time is corrected for the V2 display only; the Pi's system clock is not set.
+# The API runs in a daemon thread so an unavailable network cannot stall drawing.
+_CLOCK_API_URL = "https://gateway.timeapi.world/timezone/Europe/London"
+_CLOCK_SYNC_INTERVAL = 600.0
+_CLOCK_SYNC_AFTER_BOOT = 60.0
+_CLOCK_SYNC_LOCK = threading.Lock()
+_CLOCK_SYNC_ANCHOR = None  # (UTC epoch seconds, monotonic seconds)
+_CLOCK_SYNC_STARTED = False
+
+try:
+    from zoneinfo import ZoneInfo
+    _LONDON_TIMEZONE = ZoneInfo("Europe/London")
+except Exception:
+    _LONDON_TIMEZONE = None
+
+
+def _system_uptime_seconds():
+    try:
+        with open("/proc/uptime", "r", encoding="ascii") as uptime_file:
+            return float(uptime_file.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def _sync_internal_clock_once():
+    started = time.monotonic()
+    request = urllib.request.Request(
+        _CLOCK_API_URL,
+        headers={"Accept": "application/json", "User-Agent": "PiTV-V2/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=4.0) as response:
+        data = json.loads(response.read(65536).decode("utf-8"))
+    received = time.monotonic()
+
+    server_epoch = None
+    for field in ("utc_datetime", "datetime"):
+        value = data.get(field)
+        if not value:
+            continue
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        server_epoch = parsed.timestamp()
+        break
+    if server_epoch is None and data.get("unixtime") is not None:
+        server_epoch = float(data["unixtime"])
+    if server_epoch is None:
+        raise ValueError("time API response did not contain a recognised timestamp")
+
+    # Anchor the API timestamp to monotonic time, not the Pi's possibly-wrong
+    # wall clock. Using the request midpoint limits network-latency error.
+    anchor = ((started + received) / 2.0)
+    global _CLOCK_SYNC_ANCHOR
+    with _CLOCK_SYNC_LOCK:
+        _CLOCK_SYNC_ANCHOR = (server_epoch, anchor)
+
+
+def _clock_sync_worker():
+    # Use Linux uptime so the first request is scheduled for boot + 60 seconds,
+    # even if this process is launched a little after the Pi starts.
+    deadline = time.monotonic() + max(
+        0.0, _CLOCK_SYNC_AFTER_BOOT - _system_uptime_seconds()
+    )
+    while True:
+        delay = deadline - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            _sync_internal_clock_once()
+        except Exception:
+            # Keep the last successful correction, or use system time until
+            # the first success. Network/API failures must not stop the UI.
+            pass
+        deadline += _CLOCK_SYNC_INTERVAL
+        now = time.monotonic()
+        if deadline <= now:
+            deadline = now + _CLOCK_SYNC_INTERVAL
+
+
+def _start_clock_sync():
+    global _CLOCK_SYNC_STARTED
+    with _CLOCK_SYNC_LOCK:
+        if _CLOCK_SYNC_STARTED:
+            return
+        _CLOCK_SYNC_STARTED = True
+    threading.Thread(
+        target=_clock_sync_worker,
+        name="pitv-v2-clock-sync",
+        daemon=True,
+    ).start()
+
+
+def _display_clock_text():
+    _start_clock_sync()
+    with _CLOCK_SYNC_LOCK:
+        anchor = _CLOCK_SYNC_ANCHOR
+    if anchor is None:
+        return time.strftime("%H:%M")
+
+    epoch_at_anchor, monotonic_at_anchor = anchor
+    current_epoch = epoch_at_anchor + (time.monotonic() - monotonic_at_anchor)
+    try:
+        if _LONDON_TIMEZONE is not None:
+            return datetime.fromtimestamp(
+                current_epoch, _LONDON_TIMEZONE
+            ).strftime("%H:%M")
+    except (OverflowError, OSError, ValueError):
+        pass
+    return time.strftime("%H:%M", time.localtime(current_epoch))
 
 
 @lru_cache(maxsize=64)
@@ -676,16 +789,18 @@ def _draw_overlay(canvas, overlay):
     return canvas.convert("RGB")
 
 
-def render(state):
-    """Render only when the visible UI state has changed; return True if drawn."""
+def render(state, log_fn=None):
+    """Render only when visible state changes; return True if a frame was drawn."""
     global _LAST_SIGNATURE, _LAST_PREPARED
-    now = time.strftime("%H:%M")
+    total_started = time.monotonic()
+    now = _display_clock_text()
     state = dict(state)
     state["clock_text"] = now
     signature = json.dumps(state, sort_keys=True, ensure_ascii=True, default=str)
     if signature == _LAST_SIGNATURE:
         return False
 
+    draw_started = time.monotonic()
     canvas = _background().copy()
     view = state.get("view")
     if state.get("hard_locked") or view == "LOCKED":
@@ -709,21 +824,44 @@ def render(state):
         _nav(canvas, "GAMES", now)
         _draw_keypad(canvas, state)
     elif view in ("CLEAR", "FAKE_OFF"):
-        canvas = Image.new("RGB", (WIDTH, HEIGHT), (0,0,0))
+        canvas = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     else:
         return False
 
     canvas = _draw_overlay(canvas, state.get("overlay")) or canvas
+    draw_elapsed = time.monotonic() - draw_started
+
+    scale_started = time.monotonic()
     canvas = _native_resolution(canvas)
+    scale_elapsed = time.monotonic() - scale_started
+
     # Avoid PNG encode -> disk write -> PNG decode on every menu transition.
     # Set PITV_SAVE_PNG=1 only when a diagnostic copy is wanted.
+    prepare_started = time.monotonic()
     if os.environ.get("PITV_SAVE_PNG", "").strip() == "1":
         os.makedirs(os.path.dirname(PNG_PATH), mode=0o700, exist_ok=True)
         canvas.save(PNG_PATH, format="PNG", optimize=False)
     prepared = pitv_framebuffer.prepare_image(canvas)
+    prepare_elapsed = time.monotonic() - prepare_started
+
+    display_started = time.monotonic()
     pitv_framebuffer.display_prepared_frame(prepared)
+    display_elapsed = time.monotonic() - display_started
+
     _LAST_PREPARED = prepared
     _LAST_SIGNATURE = signature
+    total_elapsed = time.monotonic() - total_started
+    if log_fn is not None and total_elapsed >= 0.5:
+        try:
+            log_fn(
+                "V2 graphic render {:.2f}s (draw {:.2f}s, scale {:.2f}s, "
+                "pixel packing {:.2f}s, framebuffer write {:.2f}s)".format(
+                    total_elapsed, draw_elapsed, scale_elapsed,
+                    prepare_elapsed, display_elapsed,
+                )
+            )
+        except Exception:
+            pass
     return True
 
 
