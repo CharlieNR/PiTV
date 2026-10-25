@@ -7,8 +7,13 @@ import mmap
 import os
 import struct
 import sys
+import threading
 from typing import Any
 from functools import lru_cache
+
+# Serialise framebuffer operations: the carousel worker can update a region
+# while the main UI changes screens. RLock permits nested public helpers.
+DISPLAY_LOCK = threading.RLock()
 
 from PIL import Image, ImageMath
 
@@ -533,7 +538,7 @@ def _pan_to_page(fd: int, target_yoffset: int) -> None:
     fcntl.ioctl(fd, FBIOPAN_DISPLAY, var_buf, True)
 
 
-def display_prepared_frame(prepared: dict[str, Any], device: str = "/dev/fb0") -> dict[str, Any]:
+def _display_prepared_frame_unlocked(prepared: dict[str, Any], device: str = "/dev/fb0") -> dict[str, Any]:
     """Display a prepared frame, using a page flip if fbdev exposes two pages."""
     if not os.access(device, os.R_OK | os.W_OK):
         raise PermissionError(f"Framebuffer is not readable and writable: {device}")
@@ -594,12 +599,17 @@ def display_prepared_frame(prepared: dict[str, Any], device: str = "/dev/fb0") -
     }
 
 
+def display_prepared_frame(prepared: dict[str, Any], device: str = "/dev/fb0") -> dict[str, Any]:
+    with DISPLAY_LOCK:
+        return _display_prepared_frame_unlocked(prepared, device)
+
+
 def display_png(path: str, device: str = "/dev/fb0") -> dict[str, Any]:
     """Prepare and display a PNG directly through fbdev, without an external viewer."""
     return display_prepared_frame(prepare_png(path, device), device)
 
 
-def display_png_region(
+def _display_png_region_unlocked(
     path: str,
     device: str = "/dev/fb0",
     region: tuple[int, int, int, int] = (0, 615, 1280, 654),
@@ -717,7 +727,124 @@ def display_png_region(
     }
 
 
-def clear_framebuffer(device: str = "/dev/fb0") -> None:
+
+def display_png_region(
+    path: str,
+    device: str = "/dev/fb0",
+    region: tuple[int, int, int, int] = (0, 615, 1280, 654),
+) -> dict[str, Any]:
+    """Thread-safe regional update for an existing PNG."""
+    with DISPLAY_LOCK:
+        return _display_png_region_unlocked(path, device, region)
+
+
+def display_image_region(
+    image: Image.Image,
+    region: tuple[int, int, int, int],
+    device: str = "/dev/fb0",
+    source_size: tuple[int, int] = (1280, 720),
+) -> dict[str, Any]:
+    """Write an image into one framebuffer rectangle without a full-frame render.
+
+    The image contains only the destination rectangle; region positions it in
+    the renderer's logical source space. Only the visible page is updated.
+    """
+    with DISPLAY_LOCK:
+        return _display_image_region_unlocked(image, region, device, source_size)
+
+
+def _display_image_region_unlocked(
+    image: Image.Image,
+    region: tuple[int, int, int, int],
+    device: str,
+    source_size: tuple[int, int],
+) -> dict[str, Any]:
+    if not os.access(device, os.R_OK | os.W_OK):
+        raise PermissionError(f"Framebuffer is not readable and writable: {device}")
+    logical_width, logical_height = (int(source_size[0]), int(source_size[1]))
+    left, top, right, bottom = (int(value) for value in region)
+    if not (logical_width > 0 and logical_height > 0
+            and 0 <= left < right <= logical_width
+            and 0 <= top < bottom <= logical_height):
+        raise ValueError(f"Invalid regional framebuffer bounds: {region!r}.")
+
+    image = image.convert("RGB")
+    if image.size != (right - left, bottom - top):
+        image = image.resize((right - left, bottom - top), Image.Resampling.NEAREST)
+
+    with open(device, "r+b", buffering=0) as fb:
+        info = _framebuffer_info(fb.fileno())
+        width, height = int(info["width"]), int(info["height"])
+        scale = min(width / logical_width, height / logical_height)
+        target_width = max(1, min(width, round(logical_width * scale)))
+        target_height = max(1, min(height, round(logical_height * scale)))
+        image_left = (width - target_width) // 2
+        image_top = (height - target_height) // 2
+        dest_left = image_left + round(left * scale)
+        dest_top = image_top + round(top * scale)
+        dest_right = image_left + round(right * scale)
+        dest_bottom = image_top + round(bottom * scale)
+        dest_width = dest_right - dest_left
+        dest_height = dest_bottom - dest_top
+        if dest_width <= 0 or dest_height <= 0:
+            raise RuntimeError("Regional framebuffer target has zero area.")
+
+        if image.size != (dest_width, dest_height):
+            image = image.resize((dest_width, dest_height), Image.Resampling.NEAREST)
+
+        # Pack the strip with PiTV's native converter, using the strip's stride.
+        region_info = dict(info)
+        region_info.update({
+            "width": dest_width,
+            "height": dest_height,
+            "virtual_width": dest_width,
+            "virtual_height": dest_height,
+            "xoffset": 0,
+            "yoffset": 0,
+            "line_length": dest_width * int(info["bytes_per_pixel"]),
+            "memory_length": dest_width * dest_height * int(info["bytes_per_pixel"]),
+        })
+        packed = _pack_rgb565_native(image, region_info, dest_width, dest_height)
+        if packed is None:
+            packed = _pack_with_numpy(image, region_info)
+        if packed is None:
+            pillow_packed = _pack_with_pillow_math(image, region_info)
+            if pillow_packed is not None:
+                packed = {"frame": pillow_packed, "packing_method": "pillow-imagemath"}
+        if packed is None:
+            raise RuntimeError(
+                "Fast regional packing is unavailable for this framebuffer format; "
+                "the carousel animation was stopped safely."
+            )
+
+        frame = packed["frame"]
+        bytes_per_pixel = int(info["bytes_per_pixel"])
+        row_bytes = dest_width * bytes_per_pixel
+        if len(frame) != row_bytes * dest_height:
+            raise RuntimeError("Regional framebuffer packer returned an unexpected buffer size.")
+        base_x = (int(info["xoffset"]) + dest_left) * bytes_per_pixel
+        base_y = int(info["yoffset"]) + dest_top
+        with mmap.mmap(
+            fb.fileno(), info["memory_length"],
+            flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE,
+        ) as mapped:
+            for row in range(dest_height):
+                src_start = row * row_bytes
+                dst_start = (base_y + row) * int(info["line_length"]) + base_x
+                mapped[dst_start:dst_start + row_bytes] = frame[src_start:src_start + row_bytes]
+
+    return {
+        "device": device,
+        "region": (dest_left, dest_top, dest_right, dest_bottom),
+        "width": dest_width,
+        "height": dest_height,
+        "bits_per_pixel": info["bits_per_pixel"],
+        "packing_method": packed.get("packing_method", "native"),
+        "partial_write": True,
+    }
+
+
+def _clear_framebuffer_unlocked(device: str = "/dev/fb0") -> None:
     """Clear the visible framebuffer to opaque black."""
     if not os.access(device, os.R_OK | os.W_OK):
         raise PermissionError(f"Framebuffer is not readable and writable: {device}")
@@ -743,3 +870,8 @@ def clear_framebuffer(device: str = "/dev/fb0") -> None:
             flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE,
         ) as mapped:
             mapped[:] = frame
+
+
+def clear_framebuffer(device: str = "/dev/fb0") -> None:
+    with DISPLAY_LOCK:
+        _clear_framebuffer_unlocked(device)
