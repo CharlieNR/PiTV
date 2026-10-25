@@ -1693,6 +1693,23 @@ def render(state, log_fn=None):
     # lock). A stale animation frame cannot land over a newly rendered screen.
     with _CAROUSEL_LOCK:
         pitv_framebuffer.display_prepared_frame(prepared)
+        if view == "MENU" and _CAROUSEL["view"] == "MENU" and _CAROUSEL["items"]:
+            # A full-screen redraw may have been prepared while a carousel
+            # slide was moving. Repair that region from the current position
+            # immediately after the full frame, avoiding a stale final slide.
+            try:
+                current_strip = _draw_carousel_strip(
+                    list(_CAROUSEL["items"]), float(_CAROUSEL["position"])
+                )
+                pitv_framebuffer.display_image_region(
+                    current_strip, (0, 70, WIDTH, 365), source_size=(WIDTH, HEIGHT)
+                )
+            except Exception as exc:
+                if log_fn is not None:
+                    try:
+                        log_fn(f"V2 carousel region restore failed: {type(exc).__name__}: {exc}")
+                    except Exception:
+                        pass
     display_elapsed = time.monotonic() - display_started
 
     _LAST_PREPARED = prepared
