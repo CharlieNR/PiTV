@@ -1,0 +1,47 @@
+name: PiTV source validation
+
+on:
+  push:
+    branches:
+      - experimental
+  pull_request:
+    branches:
+      - experimental
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Python and shell syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out experimental source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import py_compile
+          files = sorted(Path(".").glob("*.py"))
+          if not files:
+              raise SystemExit("No Python files found")
+          for path in files:
+              py_compile.compile(str(path), doraise=True)
+              print(f"OK {path}")
+          PY
+      - name: Check shell syntax
+        run: |
+          set -eu
+          for file in screen ./*.sh; do
+            [ -f "$file" ] || continue
+            bash -n "$file"
+            echo "OK $file"
+          done
