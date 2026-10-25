@@ -36,6 +36,7 @@ GOLD = (255, 185, 72)
 
 _FONT_NORMAL = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 _FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+_FONT_MONO = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 _LAST_SIGNATURE = None
 _LAST_PREPARED = None
 _LAST_CLOCK_TEXT = None
@@ -1218,6 +1219,49 @@ def _draw_settings_log(canvas, state):
 
 
 
+@lru_cache(maxsize=8)
+def _terminal_font(size: int = 14):
+    try:
+        return ImageFont.truetype(_FONT_MONO, size=size)
+    except OSError:
+        return _font(size, False)
+
+
+def _draw_update_terminal(canvas, state):
+    """Draw the real updater transcript as a plain, monospaced console."""
+    d = ImageDraw.Draw(canvas)
+    d.rectangle((0, 0, WIDTH, HEIGHT), fill=(0, 0, 0))
+    font = _terminal_font(14)
+    small_font = _terminal_font(12)
+    prompt = str(state.get("update_terminal_prompt", "pi@pitv:~/PiTV $ screen update"))
+    d.text((22, 14), prompt, font=font, fill=(105, 255, 105))
+    d.line((20, 42, WIDTH-20, 42), fill=(45, 78, 45), width=1)
+
+    lines = list(state.get("update_terminal_lines", []))
+    visible_rows = 32
+    scroll = max(0, min(
+        int(state.get("update_terminal_scroll", 0)),
+        max(0, len(lines)-visible_rows),
+    ))
+    for index, line in enumerate(lines[scroll:scroll+visible_rows]):
+        text = str(line)
+        lower = text.lower()
+        colour = (225, 230, 225)
+        if "error:" in lower or "failed" in lower or "fatal:" in lower:
+            colour = (255, 110, 100)
+        elif "warning" in lower or "no new updates" in lower:
+            colour = (255, 207, 110)
+        d.text((22, 52 + index*19), text[:142], font=font, fill=colour)
+
+    status = state.get("update_terminal_status", {})
+    status_name = str(status.get("status", "unknown")).upper()
+    status_message = str(status.get("message", "")).replace("\n", " ").strip()
+    footer_colour = (255, 110, 100) if status_name == "FAILED" else (105, 255, 105)
+    d.line((20, 674, WIDTH-20, 674), fill=(45, 78, 45), width=1)
+    footer = f"[{status_name}] {status_message} | UP/DOWN: scroll  SELECT: latest  BACK: Settings"
+    d.text((22, 687), footer[:142], font=small_font, fill=footer_colour)
+
+
 def _draw_games(canvas, state):
     d = ImageDraw.Draw(canvas)
     _label(d, (54, 77), "GAMES LIBRARY", 22, WHITE, True)
@@ -1785,6 +1829,8 @@ def render(state, log_fn=None):
         _draw_settings(canvas, state)
     elif view == "SETTINGS_LOG":
         _draw_settings_log(canvas, state)
+    elif view == "UPDATE_TERMINAL":
+        _draw_update_terminal(canvas, state)
     elif view == "MUSIC":
         _draw_music(canvas, state)
     elif view == "IMPOSTER_WORD":
