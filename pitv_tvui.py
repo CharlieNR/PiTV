@@ -716,6 +716,16 @@ def carousel_index():
         return int(round(float(_CAROUSEL.get("position", 0.0)))) % len(items)
 
 
+def suspend_carousel():
+    """Cancel animation immediately before a full-screen external activity starts."""
+    with _CAROUSEL_LOCK:
+        _CAROUSEL["view"] = "SUSPENDED"
+        _CAROUSEL["target"] = None
+        _CAROUSEL["position"] = float(round(_CAROUSEL["position"]))
+        _CAROUSEL["generation"] += 1
+        _CAROUSEL_WAKE.set()
+
+
 def request_carousel_step(direction):
     """Request a smooth one-card move; rapid input updates the pending target."""
     direction = 1 if int(direction) > 0 else -1
