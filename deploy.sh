@@ -101,11 +101,11 @@ fi
 
 # Imposter generates a genuine QR PNG and writes its pixels directly to /dev/fb0.
 # This avoids fbi's virtual-terminal/console handling; no terminal-character QR fallback is used.
-if ! python3 -c 'import pitv_framebuffer; import pitv_tvui; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
+if ! python3 -c 'import pitv_framebuffer; import pitv_tvui; import pitv_artwork; import cairosvg; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
     echo "Installing Python QR/Pillow dependencies for direct framebuffer rendering..."
-    sudo apt-get install -y python3-qrcode python3-pil fonts-dejavu-core
+    sudo apt-get install -y python3-qrcode python3-pil python3-cairosvg fonts-dejavu-core
 fi
-if ! python3 -c 'import pitv_framebuffer; import pitv_tvui; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
+if ! python3 -c 'import pitv_framebuffer; import pitv_tvui; import pitv_artwork; import cairosvg; import qrcode; from qrcode.constants import ERROR_CORRECT_M; from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
     echo "ERROR: PiTV image UI, framebuffer, QR, or Pillow dependencies are unavailable."
     exit 1
 fi
@@ -130,6 +130,17 @@ sudo mkdir -p /opt/pitv
 # Safely copy scripts, configs, and service files (skipping hidden folders like .git)
 sudo cp -f *.sh *.py *.service /opt/pitv/ 2>/dev/null || true
 sudo cp -f .gitignore VERSION /opt/pitv/ 2>/dev/null || true
+
+# Install the bundled offline Lucide SVGs required by V2. The renderer creates
+# persistent PNG caches in the PiTV user's ~/.cache/pitv directory.
+if [ -d assets/icons ]; then
+    sudo mkdir -p /opt/pitv/assets
+    sudo rm -rf /opt/pitv/assets/icons
+    sudo cp -rf assets/icons /opt/pitv/assets/
+    sudo chown -R root:root /opt/pitv/assets
+    sudo find /opt/pitv/assets -type d -exec chmod 755 {} \;
+    sudo find /opt/pitv/assets -type f -exec chmod 644 {} \;
+fi
 
 # A previous interrupted deployment can leave /opt/pitv or a newly copied
 # script unreadable to the normal PiTV account. Make the code readable/traversable

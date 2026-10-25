@@ -87,22 +87,23 @@ def _framebuffer_info(fd: int) -> dict[str, Any]:
 
 
 def prepare_png(path: str, device: str = "/dev/fb0") -> dict[str, Any]:
-    """Convert a PNG to the framebuffer's native pixel layout without displaying it.
-
-    Call this in the background before the screen needs to change. The resulting
-    byte buffer can be copied to the visible page or flipped in with one pan ioctl.
-    """
+    """Load a PNG and prepare it for fbdev display."""
     if not os.path.isfile(path):
         raise FileNotFoundError(f"PNG file does not exist: {path}")
+    with Image.open(path) as opened:
+        image = opened.convert("RGB")
+    return prepare_image(image, device)
+
+
+def prepare_image(image: Image.Image, device: str = "/dev/fb0") -> dict[str, Any]:
+    """Prepare an existing Pillow image directly, avoiding PNG disk I/O."""
     if not os.access(device, os.R_OK | os.W_OK):
         raise PermissionError(f"Framebuffer is not readable and writable: {device}")
-
     with open(device, "r+b", buffering=0) as fb:
         info = _framebuffer_info(fb.fileno())
 
     width, height = info["width"], info["height"]
-    with Image.open(path) as opened:
-        image = opened.convert("RGB")
+    image = image.convert("RGB")
     source_width, source_height = image.size
     scale = min(width / source_width, height / source_height)
     target_size = (

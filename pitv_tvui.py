@@ -15,6 +15,7 @@ from functools import lru_cache
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import pitv_framebuffer
+import pitv_artwork
 
 # Pillow 8/9 compatibility: Image.Resampling was added in Pillow 9.1.
 _RESAMPLING = getattr(Image, "Resampling", Image)
@@ -36,6 +37,7 @@ _LAST_SIGNATURE = None
 _LAST_PREPARED = None
 
 
+@lru_cache(maxsize=64)
 def _font(size: int, bold: bool = False):
     path = _FONT_BOLD if bold else _FONT_NORMAL
     try:
@@ -48,6 +50,7 @@ def _mix(a, b, amount):
     return tuple(int(a[i] * (1.0 - amount) + b[i] * amount) for i in range(3))
 
 
+@lru_cache(maxsize=1)
 def _background():
     image = Image.new("RGB", (WIDTH, HEIGHT), BG)
     draw = ImageDraw.Draw(image)
@@ -142,6 +145,12 @@ def _base_art(kind, w, h):
 def _artwork(kind, w=600, h=280):
     """Make a local, offline cover illustration for each menu destination."""
     key = str(kind).upper()
+    if key != "MATRIX" and key in pitv_artwork.ICON_MAP:
+        return pitv_artwork.artwork(key, int(w), int(h))
+    if key == "MATRIX":
+        cached_matrix = pitv_artwork.load_cached_generated_artwork(key, int(w), int(h))
+        if cached_matrix is not None:
+            return cached_matrix
     im, d, accent = _base_art(key, int(w), int(h))
     w, h = im.size
 
@@ -348,17 +357,31 @@ def _artwork(kind, w=600, h=280):
         poly([(0,.68),(.18,.48),(.34,.66),(.50,.45),(.69,.68),(.84,.51),(1,.66),(1,1),(0,1)],(11,32,68))
         poly([(0,.82),(.28,.66),(.43,.82),(.72,.63),(1,.82),(1,1),(0,1)],(13,57,89))
 
-    # A restrained outer glow keeps cover illustrations legible at TV distance.
+    # Matrix Rain remains the original rain artwork, cached persistently after first generation.
+    if key == "MATRIX":
+        return pitv_artwork.cache_generated_artwork(key, int(w), int(h), im)
     return im
+
+
+@lru_cache(maxsize=128)
+def _fitted_artwork(key, width, height, source_width, source_height):
+    art = _artwork(str(key), int(source_width), int(source_height))
+    return ImageOps.fit(art, (int(width), int(height)), method=_RESAMPLING.BILINEAR)
+
+
+@lru_cache(maxsize=128)
+def _cover_mask(width, height, radius):
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width-1, height-1),
+                                           radius=radius, fill=255)
+    return mask
 
 
 def _cover(canvas, box, key, radius=16, image_size=(600, 280)):
     x0, y0, x1, y1 = map(int, box)
     width, height = max(1, x1-x0), max(1, y1-y0)
-    art = _artwork(str(key), image_size[0], image_size[1])
-    art = ImageOps.fit(art, (width, height), method=_RESAMPLING.BILINEAR)
-    mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width-1, height-1), radius=radius, fill=255)
+    art = _fitted_artwork(str(key), width, height, image_size[0], image_size[1])
+    mask = _cover_mask(width, height, int(radius))
     canvas.paste(art, (x0, y0), mask)
 
 
@@ -373,48 +396,40 @@ def _pill(draw, box, text, fill=(29, 71, 126), fg=WHITE, size=13):
 
 
 def _lock_icon(draw, x, y, scale=1.0, colour=(222, 235, 255)):
-    s = scale
-    draw.arc((x+5*s, y, x+21*s, y+18*s), 180, 360, fill=colour, width=max(2,int(3*s)))
-    draw.rounded_rectangle((x+2*s, y+10*s, x+24*s, y+29*s),
-                           radius=max(2,int(3*s)), fill=colour)
-    draw.ellipse((x+11*s,y+16*s,x+15*s,y+20*s), fill=(17,32,61))
-    draw.rectangle((x+12*s,y+19*s,x+14*s,y+24*s), fill=(17,32,61))
+    # The lock is a real icon asset, rendered with the same proportions as the SVG.
+    try:
+        icon = pitv_artwork.load_icon("lock-keyhole", size=max(16, int(30 * scale)))
+        draw._image.paste(icon, (int(x), int(y)), icon)
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        # Keep the menu running if an asset cache is damaged; icons are rebuilt
+        # on the next normal render.
+        return
 
 
 def _nav(canvas, section, clock_text):
     d = ImageDraw.Draw(canvas)
-    # Small brand mark, then icon-led navigation rather than a text-heavy header.
-    d.ellipse((42, 18, 72, 48), fill=(27, 119, 220), outline=(117, 223, 255), width=2)
-    d.arc((49, 25, 65, 41), 25, 325, fill=(245, 252, 255), width=3)
+    # Use the official local Lucide SVG assets rather than approximate hand-drawn glyphs.
+    logo = pitv_artwork.load_icon("monitor", size=30)
+    canvas.paste(logo, (42, 18), logo)
     _label(d, (82, 20), "PiTV", 23, WHITE, True)
     items = [
-        ("HOME", "MENU", 192),
-        ("SCREENS", "DURATION_SELECT", 294),
-        ("GAMES", "GAMES_MENU", 414),
+        ("HOME", "MENU", 192, "house"),
+        ("SCREENS", "DURATION_SELECT", 294, "monitor"),
+        ("GAMES", "GAMES_MENU", 414, "gamepad-2"),
     ]
-    for label, active_view, x in items:
+    for label, active_view, x, icon_name in items:
         active = ((section == "HOME" and label == "HOME")
                   or (section == "SCREENS" and label == "SCREENS")
                   or (section == "GAMES" and label == "GAMES"))
         if active:
             d.rounded_rectangle((x-13, 15, x+89, 51), radius=16, fill=(25, 71, 130))
             d.rounded_rectangle((x-13, 46, x+89, 50), radius=2, fill=CYAN)
-        # compact symbol before label
-        ix, iy = x-1, 29
-        if label == "HOME":
-            d.line((ix,iy,ix+8,iy-7,ix+16,iy),fill=WHITE,width=2)
-            d.rectangle((ix+3,iy,ix+13,iy+9),outline=WHITE,width=2)
-        elif label == "SCREENS":
-            d.rounded_rectangle((ix,iy-7,ix+17,iy+5),radius=2,outline=WHITE,width=2)
-            d.line((ix+8,iy+5,ix+8,iy+9),fill=WHITE,width=2)
-            d.line((ix+3,iy+9,ix+13,iy+9),fill=WHITE,width=2)
-        else:
-            d.rounded_rectangle((ix,iy-6,ix+18,iy+7),radius=5,outline=WHITE,width=2)
-            d.ellipse((ix+4,iy-2,ix+7,iy+1),fill=WHITE)
-            d.ellipse((ix+11,iy-2,ix+14,iy+1),fill=WHITE)
+        icon = pitv_artwork.load_icon(icon_name, size=19)
+        canvas.paste(icon, (x-1, 20), icon)
         _label(d, (x+24, 25), label, 14, WHITE if active else MUTED, active)
     _label(d, (1230, 29), clock_text, 15, MUTED, anchor="ra")
     d.line((40, 62, 1240, 62), fill=(35, 59, 94), width=1)
+
 
 
 def _with_hero_shade(cover, left_alpha=185):
@@ -435,8 +450,7 @@ def _draw_home(canvas, state):
     label, key, description = items[selected]
 
     hero_box = (48, 105, 1232, 352)
-    hero = ImageOps.fit(_artwork(key, 840, 360), (hero_box[2]-hero_box[0], hero_box[3]-hero_box[1]),
-                        method=_RESAMPLING.BILINEAR)
+    hero = _fitted_artwork(key, hero_box[2]-hero_box[0], hero_box[3]-hero_box[1], 840, 360)
     hero = _with_hero_shade(hero)
     mask = Image.new("L", hero.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle((0,0,hero.width-1,hero.height-1),radius=22,fill=255)
@@ -515,8 +529,7 @@ def _draw_duration(canvas, state):
     key=state.get("selected_art_key","CLOCK")
     _label(d,(54,78),"SCREENSAVERS",14,MUTED,True)
     hero_box=(48,101,1232,340)
-    cover=ImageOps.fit(_artwork(key,840,360),(hero_box[2]-hero_box[0],hero_box[3]-hero_box[1]),
-                       method=_RESAMPLING.BILINEAR)
+    cover=_fitted_artwork(key,hero_box[2]-hero_box[0],hero_box[3]-hero_box[1],840,360)
     cover=_with_hero_shade(cover,155)
     mask=Image.new("L",cover.size,0)
     ImageDraw.Draw(mask).rounded_rectangle((0,0,cover.width-1,cover.height-1),radius=22,fill=255)
@@ -586,13 +599,12 @@ def _draw_imposter_count(canvas, state):
         d.rounded_rectangle((x,y,x+card_w,y+card_h),radius=18,
                             fill=(24,62,113) if chosen else PANEL,
                             outline=CYAN if chosen else (39,63,99),width=3 if chosen else 1)
-        # silhouettes
+        # Use the bundled user icon instead of approximating people with circles and blocks.
+        avatar = pitv_artwork.load_icon("user-round", size=27)
         for person in range(min(count,5)):
-            px=x+25+(person%3)*31
-            py=y+31+(person//3)*27
-            d.ellipse((px,py,px+18,py+18),fill=(95,218,255) if chosen else (107,147,192))
-            d.rounded_rectangle((px-4,py+19,px+22,py+49),radius=8,
-                                fill=(95,218,255) if chosen else (73,104,151))
+            px=x+18+(person%3)*36
+            py=y+28+(person//3)*39
+            canvas.paste(avatar, (px, py), avatar)
         _label(d,(x+card_w//2,y+119),str(count),28,WHITE if chosen else MUTED,True,anchor="mm")
         if chosen:
             _pill(d,(x+34,y+143,x+card_w-34,y+164),"SELECTED",(29,104,165),WHITE,9)
@@ -631,16 +643,15 @@ def _draw_keypad(canvas, state):
 
 
 def _draw_lock(canvas, state):
-    d=ImageDraw.Draw(canvas)
-    # Large line-art lock and restrained text; this is a safety/administrative screen.
-    d.ellipse((530,145,750,365),fill=(12,25,52),outline=(80,154,241),width=4)
-    d.arc((582,190,698,304),180,360,fill=(180,215,255),width=13)
-    d.rounded_rectangle((568,244,712,340),radius=18,fill=(52,108,177),outline=(201,231,255),width=3)
-    d.ellipse((630,274,650,294),fill=(10,25,51))
-    d.rounded_rectangle((636,290,644,318),radius=4,fill=(10,25,51))
-    _label(d,(640,418),"SYSTEM LOCKED DOWN",30,WHITE,True,anchor="mm")
-    _label(d,(640,469),"An administrator must authorise access from SSH.",17,MUTED,anchor="mm")
-    _label(d,(640,508),"The TV remains locked until the emergency code is accepted.",15,MUTED,anchor="mm")
+    d = ImageDraw.Draw(canvas)
+    # Use the real Lucide lock icon; the circle is only a restrained backdrop.
+    d.ellipse((530, 145, 750, 365), fill=(12, 25, 52), outline=(80, 154, 241), width=4)
+    icon = pitv_artwork.load_icon("lock-keyhole", size=142)
+    canvas.paste(icon, (569, 184), icon)
+    _label(d, (640, 418), "SYSTEM LOCKED DOWN", 30, WHITE, True, anchor="mm")
+    _label(d, (640, 469), "An administrator must authorise access from SSH.", 17, MUTED, anchor="mm")
+    _label(d, (640, 508), "The TV remains locked until the emergency code is accepted.", 15, MUTED, anchor="mm")
+
 
 
 def _draw_overlay(canvas, overlay):
@@ -675,7 +686,7 @@ def render(state):
     if signature == _LAST_SIGNATURE:
         return False
 
-    canvas = _background()
+    canvas = _background().copy()
     view = state.get("view")
     if state.get("hard_locked") or view == "LOCKED":
         _draw_lock(canvas, state)
@@ -704,11 +715,12 @@ def render(state):
 
     canvas = _draw_overlay(canvas, state.get("overlay")) or canvas
     canvas = _native_resolution(canvas)
-    # Keep the temporary image in PiTV's private state directory rather than
-    # using a predictable /tmp path that another local account could symlink.
-    os.makedirs(os.path.dirname(PNG_PATH), mode=0o700, exist_ok=True)
-    canvas.save(PNG_PATH, format="PNG", optimize=False)
-    prepared = pitv_framebuffer.prepare_png(PNG_PATH)
+    # Avoid PNG encode -> disk write -> PNG decode on every menu transition.
+    # Set PITV_SAVE_PNG=1 only when a diagnostic copy is wanted.
+    if os.environ.get("PITV_SAVE_PNG", "").strip() == "1":
+        os.makedirs(os.path.dirname(PNG_PATH), mode=0o700, exist_ok=True)
+        canvas.save(PNG_PATH, format="PNG", optimize=False)
+    prepared = pitv_framebuffer.prepare_image(canvas)
     pitv_framebuffer.display_prepared_frame(prepared)
     _LAST_PREPARED = prepared
     _LAST_SIGNATURE = signature
