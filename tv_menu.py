@@ -4689,6 +4689,11 @@ def _settings_submit_input():
     else:
         _settings_set_message("Unknown input action.")
         return
+    # Clear submitted credentials from the shared render state once the
+    # operation has been accepted; validation failures above keep the input
+    # intact so the user can correct it.
+    settings_text = ""
+    settings_input_context = ""
     if context != "EMERGENCY_CODE_CHANGE":
         _settings_set_message("")
 
