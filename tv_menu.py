@@ -4205,6 +4205,23 @@ def _settings_guest_locked():
     return _settings_read_flag("/tmp/pitv-guest-lock", False)
 
 
+def _settings_maintenance_status():
+    """Read the non-secret progress record written by the maintenance helper."""
+    try:
+        with open("/tmp/pitv-maintenance-status.json", "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        status = str(data.get("status", "idle")).lower()
+        updated = int(data.get("updated_at", 0) or 0)
+        if time.time() - updated > 24 * 3600:
+            return {"status": "idle", "message": "No recent maintenance task"}
+        if status not in {"queued", "running", "complete", "failed"}:
+            status = "idle"
+        return {"status": status, "message": str(data.get("message", ""))[:180],
+                "branch": str(data.get("branch", ""))}
+    except (OSError, ValueError, TypeError):
+        return {"status": "idle", "message": "No maintenance task this boot"}
+
+
 def _settings_current_items():
     """Build the visible menu dynamically from real device state."""
     page = settings_page
