@@ -857,7 +857,7 @@ def _imposter_header(canvas, title, tag="PARTY GAME"):
     canvas.paste(logo, (42, 20), logo)
     _label(d, (82, 22), "PiTV", 23, WHITE, True)
     _label(d, (158, 28), title, 15, (119, 190, 255), True)
-    _pill(canvas, (1000, 18, 1236, 56), tag, (27, 61, 96), WHITE, 11)
+    _pill(d, (1000, 18, 1236, 56), tag, (27, 61, 96), WHITE, 11)
     d = ImageDraw.Draw(canvas)
     d.line((40, 70, 1240, 70), fill=(35, 59, 94), width=1)
     return d
@@ -880,7 +880,7 @@ def _draw_imposter_word(canvas, state):
     _label(d, (640, 360), "The imposter will not receive the word.", 17, MUTED, anchor="mm")
     picker = str(state.get("word_picker") or "").strip()
     if picker:
-        _pill(canvas, (390, 411, 890, 463), "WORD CHOOSER  ·  " + picker[:30],
+        _pill(d, (390, 411, 890, 463), "WORD CHOOSER  ·  " + picker[:30],
               (24, 62, 105), WHITE, 15)
         d = ImageDraw.Draw(canvas)
     players = state.get("players") or []
@@ -899,7 +899,7 @@ def _draw_imposter_turn(canvas, state):
            15, (119, 190, 255), True, anchor="mm")
     d.rounded_rectangle((190, 158, 1090, 463), radius=30, fill=(10, 20, 43),
                         outline=(48, 100, 160), width=3)
-    _pill(canvas, (510, 185, 770, 225), "IT'S YOUR TURN", (19, 80, 95), WHITE, 13)
+    _pill(d, (510, 185, 770, 225), "IT'S YOUR TURN", (19, 80, 95), WHITE, 13)
     d = ImageDraw.Draw(canvas)
     name = current_turn.upper()
     name_size = 50 if len(name) <= 15 else 38 if len(name) <= 22 else 29
@@ -925,8 +925,8 @@ def _draw_imposter_round_complete(canvas, state):
            MUTED, anchor="mm")
     boxes = [(124, 218, 622, 548), (658, 218, 1156, 548)]
     items = [
-        ("ANOTHER CLUE ROUND", "Same roles and secret word.", "repeat-2"),
-        ("START THE VOTE", "Lock in suspicions on phones.", "vote"),
+        ("ANOTHER CLUE ROUND", "Same roles and secret word.", "clock"),
+        ("START THE VOTE", "Lock in suspicions on phones.", "chart-no-axes-combined"),
     ]
     for idx, (box, item) in enumerate(zip(boxes, items)):
         x0, y0, x1, y1 = box
@@ -942,7 +942,7 @@ def _draw_imposter_round_complete(canvas, state):
         _label(d, ((x0+x1)//2, 378), title, 20, WHITE, True, anchor="mm")
         _label(d, ((x0+x1)//2, 428), description, 15, (187, 205, 231), anchor="mm")
         if selected:
-            _pill(canvas, (x0+132, 475, x1-132, 511), "SELECTED", (26, 102, 163), WHITE, 11)
+            _pill(d, (x0+132, 475, x1-132, 511), "SELECTED", (26, 102, 163), WHITE, 11)
             d = ImageDraw.Draw(canvas)
     _imposter_footer(d, "UP / DOWN  CHOOSE     SELECT  CONFIRM     ·     BACK  PREVIOUS PLAYER")
 
@@ -1041,7 +1041,7 @@ def _draw_imposter_revealed(canvas, state):
     d.rounded_rectangle((150, 111, 1130, 611), radius=28, fill=(10, 20, 43),
                         outline=(39, 67, 108), width=2)
     tag = "THE GROUP CAUGHT THEM" if caught and total_votes else "THE IMPOSTER ESCAPED" if total_votes else "NO VOTES WERE CAST"
-    _pill(canvas, (380, 139, 900, 182), tag,
+    _pill(d, (380, 139, 900, 182), tag,
           (20, 91, 65) if caught and total_votes else (103, 42, 48) if total_votes else (43, 59, 79),
           WHITE, 14)
     d = ImageDraw.Draw(canvas)
@@ -1060,7 +1060,7 @@ def _draw_imposter_error(canvas, state):
     message = str(state.get("error_message") or "PiTV could not display this screen.")
     url = str(state.get("join_url") or "")
     d = _imposter_header(canvas, "IMPOSTER  /  DISPLAY STATUS", "ATTENTION")
-    icon = pitv_artwork.load_icon("alert-triangle", size=62)
+    icon = pitv_artwork.load_icon("bug", size=62)
     canvas.paste(icon, (609, 169), icon)
     d = ImageDraw.Draw(canvas)
     _label(d, (640, 278), title.upper(), 27, WHITE, True, anchor="mm")

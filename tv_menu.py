@@ -1691,7 +1691,7 @@ def run_imposter(stdscr,players: list[str]) -> None:
             time.sleep(0.08)
     finally:
         if join_viewer is not None:
-            _imposter_stop_join_image(stdscr,join_viewer)
+            _imposter_stop_join_image(stdscr,join_viewer,restore_terminal=False)
         pitv_imposter.end_game(game_id);input_queue.clear();controller_mode=prior
         _IMPOSTER_DRAW_SCREEN = None
         if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
