@@ -17,11 +17,11 @@ PiTV also includes admin and guest web pages. The guest page is handy when frien
 ## Features
 
 - **TV controls:** power and HDMI input switching through HDMI-CEC, when supported by your TV and HDMI setup.
-- **On-screen menu:** screensavers, optional games and AirPlay mirroring. Version 2 is the factory-default, image-led TV interface with offline Lucide SVG icon assets and Matrix rain artwork, drawing PNG screens directly to the Linux framebuffer (no desktop required). Version 1 remains available as the Classic backup. Choose either with `screen version 1` or `screen version 2`; the setting persists and takes effect after restarting `pitv-menu.service`. Fresh installs default to version 2, while an explicitly saved choice is preserved.
+- **On-screen menu:** Version 2 is the factory-default image-led TV interface, drawing directly to the Linux framebuffer (no desktop required). Its home screen has an animated game carousel with page dots, five quick shortcuts and a persistent Recently Played row. Carousel autoplay and interval are configurable. The Settings tab provides nested on-TV menus for controllers, player PINs, guest access, system updates/restarts and logs. Version 1 remains available as the Classic backup. Choose either with `screen version 1` or `screen version 2`; the setting persists and takes effect after restarting `pitv-menu.service`.
 - **Apple Home (optional):** a Homebridge TV tile for power, inputs and remote-key navigation, plus Guest Mode, Kill Switch and Joke Mode switches.
 - **Admin page:** manage accounts and TV controls from a browser.
 - **Guest page:** let friends use a phone-friendly remote when Guest Mode is enabled.
-- **Game controllers:** optional Bluetooth controllers and game input support.
+- **Game controllers:** optional Bluetooth controllers and game input support. The V2 Settings menu can scan and pair Bluetooth gamepads; deployment installs `bluez` and `python3-evdev` through the system package manager if needed.
 - **Imposter party game:** built-in multiplayer word-bluffing game. Its join QR is generated as a PNG and displayed as real pixels through the Linux framebuffer image viewer, with PIN verification, secret roles, timed voting and animated results.
 
 ## Installation
@@ -61,6 +61,8 @@ Follow the prompts. The installer copies PiTV into place, configures and restart
 
 Run the installer as your normal Pi login user, not from an unrelated root shell.
 
+The installer uses Raspberry Pi OS/Debian packages for system dependencies; it does not install these into the OS Python environment with `pip`. For the Settings menu's controller features it checks for BlueZ's `bluetoothctl` and Python's `evdev` input module and installs `bluez` / `python3-evdev` with `apt` only if missing. The carousel and nested Settings menus need no additional Python module beyond PiTV's existing V2 dependencies.
+
 ### 4. Optional: set up a game controller
 
 If a controller works in the menu but not in games, run this once and reboot:
@@ -82,6 +84,25 @@ systemctl --no-pager --full status pitv-guest.service
 The three services should show as running. The admin page is at `http://<pi-ip-address>/` and the guest page is at `http://<pi-ip-address>:8080/`. Replace `<pi-ip-address>` with the Pi's actual home-network address.
 
 ## Getting started
+
+### V2 home screen and on-TV Settings
+
+The V2 home screen puts the game carousel above the five shortcuts: Fire, Clock + Stars, Matrix Rain, Stream Music and Games. The carousel moves between available games with a smooth regional transition; the active card is highlighted and marked by a brighter, wider dot. Games are included only if the corresponding executable is installed. Selecting a carousel or Recently Played entry still uses the existing game PIN prompt.
+
+The home screen also records the most recently launched games locally in the PiTV state file. Entries are unique and newest-first, up to six games. The carousel's autoplay setting and interval persist through reboots and ordinary updates.
+
+Open Settings by moving to **SETTINGS** in the V2 top navigation, or from a terminal run:
+
+```bash
+screen settings
+screen settings carousel autoplay status
+screen settings carousel autoplay off
+screen settings carousel autoplay on
+```
+
+The Settings page is organised into submenus for Home Screen, Controllers, Player PINs, Guest Access, System & Updates and Logs. Controller pairing uses BlueZ's `bluetoothctl`; player and guest account actions use the same existing management tools as the CLI. Sensitive categories require the emergency/admin code. Replace the public default code before using the protected features. Updates and reboots show a confirmation screen and run through a restricted maintenance helper; the update helper preserves local edits in Git stash and backs up `~/.pitv` before deploying.
+
+The display is built for V2. The classic Version 1 menu remains available as a rollback, but the new graphical Settings screen and game carousel are V2 features.
 
 ### Admin page
 
