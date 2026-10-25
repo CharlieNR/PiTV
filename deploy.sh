@@ -225,6 +225,17 @@ sudo usermod -aG pitv "$PITV_USER" 2>/dev/null || true
 sudo systemctl stop pitv-menu.service pitv-guest.service pitv-admin.service 2>/dev/null || true
 PITV_SERVICES_STOPPED=1
 
+# Populate the persistent icon PNG cache while deployment is in progress.
+# This prevents a first-use CairoSVG rasterisation from blocking TV rendering.
+echo "Preparing the PiTV V2 icon cache..."
+if ! (
+    cd /opt/pitv
+    sudo -u "$PITV_USER" -H /usr/bin/env PYTHONPATH=/opt/pitv \
+        /usr/bin/python3 -c 'import pitv_artwork; print(f"Prepared {pitv_artwork.warm_icon_cache()} V2 icons.")'
+); then
+    echo "WARNING: V2 icon prewarming failed; deployment will continue."
+fi
+
 STATE_FILE="$PITV_HOME/.pitv/pitv-state.json"
 if sudo -u "$PITV_USER" -H test -f "$STATE_FILE"; then
     echo "Central state file already exists; deploy.sh will not modify or recreate it."
