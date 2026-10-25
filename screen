@@ -41,6 +41,12 @@ Other modes:
                             tyrian moonbuggy supertux boulderdash 2048 sudoku
                             minesweeper curseofwar nethack crawl dopewars
 
+Settings:
+  screen settings                         open Settings on the TV
+  screen settings carousel autoplay on    enable rotating game carousel
+  screen settings carousel autoplay off   disable automatic rotation
+  screen settings carousel autoplay status show current autoplay setting
+
 Controller:
   screen controller        scan for Bluetooth controller (60 seconds)
 
@@ -476,6 +482,19 @@ case "$CMD" in
             *)                    KEY="${KEY^^}"    ;;
         esac
         _send_raw "RUN GAME INDEFINITE ${KEY}"
+        ;;
+
+
+    settings)
+        if [[ $# -eq 1 ]]; then
+            _send "SETTINGS"
+        elif [[ $# -eq 4 && "${2:-}" == "carousel" && "${3:-}" == "autoplay" ]]; then
+            exec /usr/bin/python3 /opt/pitv/pitv-config.py carousel autoplay "${4}"
+        else
+            echo "Usage: screen settings" >&2
+            echo "       screen settings carousel autoplay <on|off|status>" >&2
+            exit 2
+        fi
         ;;
 
     controller)
