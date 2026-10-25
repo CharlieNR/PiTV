@@ -32,6 +32,7 @@ class CarouselSmokeTests(unittest.TestCase):
                 "pause_until": 0.0,
                 "next_auto": 9999999999.0,
                 "error": False,
+                "revision": 100,
             })
         pitv_tvui._CAROUSEL_WAKE.clear()
 
@@ -66,6 +67,18 @@ class CarouselSmokeTests(unittest.TestCase):
         self.assertTrue(pitv_tvui.request_carousel_step(1))
         self.assertEqual(pitv_tvui._CAROUSEL["target"], 1)
         self.assertGreater(pitv_tvui._CAROUSEL["pause_until"], 0.0)
+
+    def test_regional_failure_falls_back_to_instant_manual_navigation(self):
+        with pitv_tvui._CAROUSEL_LOCK:
+            pitv_tvui._CAROUSEL["error"] = True
+            pitv_tvui._CAROUSEL["position"] = 0.0
+            pitv_tvui._CAROUSEL["target"] = None
+            original_revision = pitv_tvui._CAROUSEL["revision"]
+
+        self.assertTrue(pitv_tvui.request_carousel_step(1))
+        self.assertEqual(pitv_tvui.carousel_index(), 1)
+        self.assertIsNone(pitv_tvui._CAROUSEL["target"])
+        self.assertEqual(pitv_tvui.carousel_revision(), original_revision + 1)
 
     def test_manual_navigation_is_ignored_outside_home(self):
         pitv_tvui._CAROUSEL["view"] = "SETTINGS"
