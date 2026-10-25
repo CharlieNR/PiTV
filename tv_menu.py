@@ -4356,11 +4356,18 @@ def _settings_open_page(page):
 
 def _settings_refresh_logs():
     global settings_log_lines, settings_log_scroll
+    lines = []
     try:
         with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as handle:
-            lines = handle.readlines()[-120:]
+            lines.extend(handle.readlines()[-90:])
     except OSError:
-        lines = []
+        pass
+    try:
+        with open("/tmp/pitv-settings-maintenance.log", "r",
+                  encoding="utf-8", errors="replace") as handle:
+            lines.extend(handle.readlines()[-30:])
+    except OSError:
+        pass
     safe = []
     for raw_line in lines:
         line = raw_line.rstrip()
