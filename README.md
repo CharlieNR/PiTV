@@ -423,6 +423,16 @@ After reboot, check the controller mapper log:
 cat /tmp/pitv-mapper.log
 ```
 
+### Test TV-follow standby sleep
+
+1. Run `screen status` and check that the TV is reported as on.
+2. Run `screen off`. PiTV should leave its current activity, clear the display and enter low-activity sleep while the Raspberry Pi remains online.
+3. Run `screen on`. The PiTV home screen should return without rebooting the Pi.
+4. Repeat using the website remote, the Apple remote and the TV's physical remote. The physical remote depends on the TV reporting power state over HDMI-CEC, so allow several seconds for detection.
+5. Run `screen log tail` and look for `TV is in standby; PiTV interface sleeping` and `TV is on; PiTV interface resumed`.
+
+Automated tests check the state-change logic without hardware; this manual test is still necessary to verify the TV and HDMI-CEC connection.
+
 ### TV power or input switching doesn't work
 
 - Check the HDMI cable and enable HDMI-CEC in TV settings.

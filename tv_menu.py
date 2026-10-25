@@ -4375,7 +4375,7 @@ def _settings_maintenance_status():
         updated = int(data.get("updated_at", 0) or 0)
         if time.time() - updated > 24 * 3600:
             return {"status": "idle", "message": "No recent maintenance task"}
-        if status not in {"queued", "running", "complete", "failed"}:
+        if status not in {"queued", "running", "complete", "up-to-date", "failed"}:
             status = "idle"
         return {"status": status, "message": str(data.get("message", ""))[:180],
                 "branch": str(data.get("branch", ""))}

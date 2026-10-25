@@ -58,7 +58,7 @@ jobs:
       - name: Run hardware-free carousel and menu tests
         env:
           PITV_STATE_FILE: ${{ runner.temp }}/pitv-test-state.json
-        run: python -m unittest -v test_pitv_carousel test_pitv_menu_logic
+        run: python -m unittest -v test_pitv_carousel test_pitv_menu_logic test_pitv_maintenance
       - name: Check shell syntax
         run: |
           set -eu

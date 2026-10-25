@@ -1,9 +1,10 @@
 """Hardware-free tests for the V2 menu's state and Settings guards."""
 from __future__ import annotations
 
+import json
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 import tv_menu
 
@@ -127,6 +128,22 @@ class GraphicsRecoveryTests(unittest.TestCase):
 
 
 
+class MaintenanceStatusTests(unittest.TestCase):
+    def test_up_to_date_status_is_preserved_for_settings_ui(self):
+        payload = {
+            "status": "up-to-date",
+            "message": "No new updates are available on experimental.",
+            "branch": "experimental",
+            "updated_at": int(time.time()),
+        }
+        with patch("builtins.open", mock_open(read_data=json.dumps(payload))):
+            status = tv_menu._settings_maintenance_status()
+
+        self.assertEqual(status["status"], "up-to-date")
+        self.assertEqual(status["message"], "No new updates are available on experimental.")
+        self.assertEqual(status["branch"], "experimental")
+
+
 class TVPowerSleepRequestTests(unittest.TestCase):
     """TV standby must stop foreground activity without shutting down the Pi."""
 
@@ -156,6 +173,16 @@ class TVPowerSleepRequestTests(unittest.TestCase):
             tv_menu._set_tv_power("off")
 
         self.assertEqual(tv_menu.input_queue, ["SELECT"])
+
+    def test_tv_power_on_publishes_wake_state(self):
+        tv_menu.tv_power_state = "off"
+        tv_menu.input_queue[:] = ["HOME"]
+
+        with patch.object(tv_menu, "TV_STATE_FILE", "/dev/null"), patch.object(tv_menu, "log"):
+            tv_menu._set_tv_power("on")
+
+        self.assertEqual(tv_menu.tv_power_state, "on")
+        self.assertEqual(tv_menu.input_queue, ["HOME"])
 
 
 if __name__ == "__main__":

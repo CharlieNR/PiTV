@@ -123,6 +123,23 @@ def _git_checked(config: dict, args: list[str], label: str) -> str:
     return (result.stdout or "").strip()
 
 
+def _is_up_to_date(
+    branch: str,
+    current_branch: str,
+    local_head: str,
+    remote_head: str,
+    working_tree_status: str,
+) -> bool:
+    """Only skip an update when the requested branch is current, clean and at origin."""
+    return (
+        branch in ALLOWED_BRANCHES
+        and current_branch == branch
+        and bool(local_head)
+        and local_head == remote_head
+        and not working_tree_status.strip()
+    )
+
+
 def _install_root_helper_after_update(config: dict) -> None:
     """Install the refreshed fixed-action helper from the trusted checkout."""
     candidate = Path(config["repo"]) / "pitv-maintenance.py"
@@ -220,12 +237,33 @@ def _update_worker(branch: str) -> int:
     if not RUNNER_PATH.is_file() or RUNNER_PATH.is_symlink():
         raise RuntimeError("Trusted deployment runner is missing. Run deploy.sh from the PiTV checkout once.")
 
-    backup = _backup_state(config, branch)
-    _append_log(f"Private device-settings backup created at {backup}.")
-    _write_status("running", "Fetching repository updates and preserving local edits.", branch)
-
+    _write_status("running", f"Checking {branch} for new commits.", branch)
+    _append_log(f"Checking origin/{branch} before creating an update backup.")
     _git_checked(config, ["fetch", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}"],
                  "Fetching target branch")
+
+    # A repeated Settings update is a successful no-op only when the requested
+    # branch is checked out, the working tree is clean, and HEAD exactly matches
+    # the freshly fetched remote commit. Otherwise continue with backup/stash/
+    # fast-forward/deploy as normal.
+    current_branch = _git_checked(config, ["branch", "--show-current"], "Checking current branch")
+    local_head = _git_checked(config, ["rev-parse", "HEAD"], "Checking local source revision")
+    remote_head = _git_checked(
+        config, ["rev-parse", f"refs/remotes/origin/{branch}"], "Checking remote source revision"
+    )
+    working_tree = _git_checked(
+        config, ["status", "--porcelain", "--untracked-files=all"], "Checking local edits"
+    )
+    if _is_up_to_date(branch, current_branch, local_head, remote_head, working_tree):
+        message = f"No new updates are available on {branch}."
+        _write_status("up-to-date", message, branch)
+        _append_log(message)
+        return 0
+
+    backup = _backup_state(config, branch)
+    _append_log(f"Private device-settings backup created at {backup}.")
+    _write_status("running", "Preserving local edits and preparing deployment.", branch)
+
     dirty = _git_checked(config, ["status", "--porcelain", "--untracked-files=all"],
                           "Checking local edits")
     if dirty:
