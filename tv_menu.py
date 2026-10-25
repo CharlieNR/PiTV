@@ -4996,10 +4996,13 @@ def _settings_safe_select(item):
 
 
 def _settings_safe_submit_input():
-    """Handle input submission failures without losing the working menu."""
+    """Handle input submission failures without losing or retaining credentials."""
+    global settings_text, settings_input_context
     try:
         _settings_submit_input()
     except Exception as exc:
+        settings_text = ""
+        settings_input_context = ""
         log(f"Settings input submission failed: {type(exc).__name__}: {exc}")
         _settings_set_message(
             f"Settings input failed ({type(exc).__name__}). Check Logs for details."
@@ -5301,6 +5304,9 @@ def main(stdscr):
                             home_focus = "shortcuts"
                             selected_art_idx = 4
                         elif cmd == "SELECT" and recent_items:
+                            selected_recent_idx = max(
+                                0, min(selected_recent_idx, len(recent_items)-1)
+                            )
                             _launch_home_game_key(stdscr, recent_items[selected_recent_idx][1])
                         elif cmd == "BACK":
                             home_focus = "shortcuts"
