@@ -141,7 +141,8 @@ fi
 
 cd "$REPO"
 echo "Deploying the updated '$TARGET_BRANCH' version..."
-./deploy.sh
+# Invoke through Bash so deployment still works if Git checkout loses the executable bit.
+bash ./deploy.sh
 
 # Return the user's shell to their home directory after deployment.
 cd "$HOME"
