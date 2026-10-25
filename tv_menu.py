@@ -2,6 +2,7 @@ import curses
 import fcntl
 import html
 import hmac
+import importlib
 import json
 import os
 import random
@@ -29,6 +30,79 @@ except Exception as _graphic_ui_import_exc:
     GRAPHIC_UI_AVAILABLE = False
     GRAPHIC_UI_IMPORT_ERROR = str(_graphic_ui_import_exc)
 _GRAPHIC_UI_FAILED = False
+_GRAPHIC_RENDER_RETRY_AFTER = 0.0
+_GRAPHIC_IMPORT_RETRY_AFTER = 0.0
+_GRAPHIC_LAST_ERROR_LOG = 0.0
+_GRAPHIC_WAIT_SCREEN_CLEARED = False
+
+
+def _ensure_v2_renderer():
+    """Retry importing V2 if deployment repairs or installs it while PiTV runs."""
+    global GRAPHIC_UI_AVAILABLE, GRAPHIC_UI_IMPORT_ERROR, pitv_tvui
+    global _GRAPHIC_IMPORT_RETRY_AFTER
+    if GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+        return True
+    now = time.monotonic()
+    if now < _GRAPHIC_IMPORT_RETRY_AFTER:
+        return False
+    _GRAPHIC_IMPORT_RETRY_AFTER = now + 2.0
+    try:
+        importlib.invalidate_caches()
+        pitv_tvui = importlib.import_module("pitv_tvui")
+        GRAPHIC_UI_AVAILABLE = True
+        GRAPHIC_UI_IMPORT_ERROR = ""
+        return True
+    except Exception as exc:
+        GRAPHIC_UI_AVAILABLE = False
+        GRAPHIC_UI_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+        return False
+
+
+def _wait_for_v2_renderer():
+    """Leave a clean blank framebuffer while V2 is unavailable; never paint curses over it."""
+    global _GRAPHIC_WAIT_SCREEN_CLEARED, _GRAPHIC_LAST_ERROR_LOG
+    now = time.monotonic()
+    if not _GRAPHIC_WAIT_SCREEN_CLEARED:
+        try:
+            pitv_framebuffer.clear_framebuffer()
+        except Exception as exc:
+            if now - _GRAPHIC_LAST_ERROR_LOG >= 5.0:
+                log(f"V2 wait-screen clear failed: {type(exc).__name__}: {exc}")
+        _GRAPHIC_WAIT_SCREEN_CLEARED = True
+    if now - _GRAPHIC_LAST_ERROR_LOG >= 5.0:
+        log(f"V2 renderer unavailable; keeping the text fallback disabled: {GRAPHIC_UI_IMPORT_ERROR}")
+        _GRAPHIC_LAST_ERROR_LOG = now
+
+
+def _handle_v2_render_error(exc):
+    """Blank instead of exposing the obsolete curses UI, then retry shortly."""
+    global _GRAPHIC_UI_FAILED, _GRAPHIC_RENDER_RETRY_AFTER
+    global _GRAPHIC_WAIT_SCREEN_CLEARED, _GRAPHIC_LAST_ERROR_LOG
+    now = time.monotonic()
+    _GRAPHIC_UI_FAILED = True
+    _GRAPHIC_RENDER_RETRY_AFTER = now + 0.25
+    if not _GRAPHIC_WAIT_SCREEN_CLEARED:
+        try:
+            pitv_framebuffer.clear_framebuffer()
+        except Exception as clear_exc:
+            log(f"V2 error-screen clear failed: {type(clear_exc).__name__}: {clear_exc}")
+        _GRAPHIC_WAIT_SCREEN_CLEARED = True
+    if now - _GRAPHIC_LAST_ERROR_LOG >= 5.0:
+        log(f"V2 graphic render failed; keeping text fallback disabled and retrying: {exc!r}")
+        for trace_line in traceback.format_exception(type(exc), exc, exc.__traceback__):
+            for trace_part in trace_line.rstrip().splitlines():
+                log(f"V2 traceback: {trace_part}")
+        _GRAPHIC_LAST_ERROR_LOG = now
+
+
+def _mark_v2_render_success():
+    """Clear failure state after the first successful complete graphical frame."""
+    global _GRAPHIC_UI_FAILED, _GRAPHIC_RENDER_RETRY_AFTER
+    global _GRAPHIC_WAIT_SCREEN_CLEARED, _GRAPHIC_LAST_ERROR_LOG
+    _GRAPHIC_UI_FAILED = False
+    _GRAPHIC_RENDER_RETRY_AFTER = 0.0
+    _GRAPHIC_WAIT_SCREEN_CLEARED = False
+    _GRAPHIC_LAST_ERROR_LOG = 0.0
 
 try:
     UI_VERSION = str(pitv_state.read_value("UI_VERSION", "2")).strip()
@@ -5627,10 +5701,13 @@ def main(stdscr):
         _publish_pin_entry_state()
 
         # ── Render ──────────────────────────────────────────────────
+        if UI_VERSION == "2" and (not GRAPHIC_UI_AVAILABLE or pitv_tvui is None):
+            _ensure_v2_renderer()
+
+        # V2 is the only menu UI in version 2. Renderer errors must never
+        # switch back to the obsolete curses/text menu.
         modern_graphic_mode = (
             UI_VERSION == "2"
-            and GRAPHIC_UI_AVAILABLE
-            and not _GRAPHIC_UI_FAILED
             and (
                 hard_locked or system_locked
                 or current_view in (
@@ -5748,7 +5825,11 @@ def main(stdscr):
         if not modern_graphic_mode:
             stdscr.refresh()
 
-        if modern_graphic_mode:
+        if modern_graphic_mode and (not GRAPHIC_UI_AVAILABLE or pitv_tvui is None):
+            _wait_for_v2_renderer()
+
+        if (modern_graphic_mode and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None
+                and time.monotonic() >= _GRAPHIC_RENDER_RETRY_AFTER):
             try:
                 if hard_locked:
                     graphic_view = "LOCKED"
@@ -5874,24 +5955,12 @@ def main(stdscr):
                     "overlay": graphic_overlay,
                 }
                 pitv_tvui.render(_graphic_state, log_fn=log)
+                _mark_v2_render_success()
             except Exception as _graphic_render_exc:
-                _GRAPHIC_UI_FAILED = True
-                log(f"Graphical interface failed; switching to text fallback: {_graphic_render_exc!r}")
-                for _trace_line in traceback.format_exception(
-                    type(_graphic_render_exc), _graphic_render_exc,
-                    _graphic_render_exc.__traceback__
-                ):
-                    for _trace_part in _trace_line.rstrip().splitlines():
-                        log(f"V2 traceback: {_trace_part}")
-                try:
-                    pitv_framebuffer.clear_framebuffer()
-                except Exception:
-                    pass
-                try:
-                    stdscr.clear()
-                    stdscr.refresh()
-                except Exception:
-                    pass
+                # Do not refresh curses or draw a text menu here. A failed V2
+                # frame is cleared to black, and rendering is retried after a
+                # short cooldown so startup bugs do not flood the log at 12 Hz.
+                _handle_v2_render_error(_graphic_render_exc)
 
         frame += 1
         time.sleep(0.08)
