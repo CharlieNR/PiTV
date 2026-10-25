@@ -190,6 +190,7 @@ settings_message = ""
 settings_message_until = 0.0
 settings_input_prompt = ""
 settings_input_mode = "text"
+settings_input_lowercase = False
 settings_input_context = ""
 settings_input_return_page = "ROOT"
 settings_text = ""
