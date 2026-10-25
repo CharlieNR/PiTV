@@ -252,7 +252,9 @@ MAINT_CONFIG="$(/usr/bin/python3 -c 'import json,sys; print(json.dumps({"user":s
 printf '%s\n' "$MAINT_CONFIG" | sudo tee /etc/pitv/maintenance.json >/dev/null
 sudo chown root:root /etc/pitv/maintenance.json
 sudo chmod 644 /etc/pitv/maintenance.json
-printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/pitv-maintenance *\n' "$PITV_USER" \
+# Exact argument lists only: the internal update-worker action is reserved
+# for detached systemd units and is not exposed through the menu user's sudo.
+printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/pitv-maintenance status, /usr/local/sbin/pitv-maintenance restart-menu, /usr/local/sbin/pitv-maintenance reboot, /usr/local/sbin/pitv-maintenance update experimental, /usr/local/sbin/pitv-maintenance update main\n' "$PITV_USER" \
     | sudo tee /etc/sudoers.d/pitv-maintenance >/dev/null
 sudo chown root:root /etc/sudoers.d/pitv-maintenance
 sudo chmod 440 /etc/sudoers.d/pitv-maintenance
