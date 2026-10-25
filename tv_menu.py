@@ -4258,18 +4258,17 @@ def _settings_current_items():
         items.append(("Back", "", "Return to Settings", "BACK"))
         return items
     if page == "PIN_DETAIL":
-        name = settings_selected_name
-        temporary = settings_selected_temporary
-        items = [
+        if settings_selected_temporary:
+            return [
+                ("Remove temporary PIN", "", "Revoke this 24-hour PIN immediately", "CONFIRM_PIN_REMOVE"),
+                ("Back", "", "Return to the PIN list", "BACK"),
+            ]
+        return [
             ("Change PIN", "", "Assign a new, unique six-digit PIN", "PIN_CHANGE"),
-        ]
-        if not temporary:
-            items.append(("Rename player", "", "Keep the existing PIN under a new name", "PIN_RENAME"))
-        items.extend([
+            ("Rename player", "", "Keep the existing PIN under a new name", "PIN_RENAME"),
             ("Remove PIN", "", "Revoke this player's game access", "CONFIRM_PIN_REMOVE"),
             ("Back", "", "Return to the PIN list", "BACK"),
-        ])
-        return items
+        ]
     if page == "GUESTS":
         return [
             ("Guest Mode", "ON" if _settings_guest_mode() else "OFF",
