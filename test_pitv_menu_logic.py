@@ -88,5 +88,44 @@ class SettingsGuardTests(unittest.TestCase):
         self.assertEqual(tv_menu.settings_pending_page, "PINS")
 
 
+class GraphicsRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.old_globals = {
+            "_GRAPHIC_UI_FAILED": tv_menu._GRAPHIC_UI_FAILED,
+            "_GRAPHIC_RENDER_RETRY_AFTER": tv_menu._GRAPHIC_RENDER_RETRY_AFTER,
+            "_GRAPHIC_LAST_ERROR_LOG": tv_menu._GRAPHIC_LAST_ERROR_LOG,
+            "_GRAPHIC_WAIT_SCREEN_CLEARED": tv_menu._GRAPHIC_WAIT_SCREEN_CLEARED,
+        }
+
+    def tearDown(self):
+        for name, value in self.old_globals.items():
+            setattr(tv_menu, name, value)
+
+    def test_v2_render_error_blanks_and_retries_without_text_fallback(self):
+        tv_menu._GRAPHIC_WAIT_SCREEN_CLEARED = False
+        tv_menu._GRAPHIC_RENDER_RETRY_AFTER = 0.0
+        with (
+            patch.object(tv_menu.pitv_framebuffer, "clear_framebuffer") as clear,
+            patch.object(tv_menu, "log"),
+        ):
+            tv_menu._handle_v2_render_error(RuntimeError("simulated render error"))
+
+        clear.assert_called_once_with()
+        self.assertTrue(tv_menu._GRAPHIC_UI_FAILED)
+        self.assertTrue(tv_menu._GRAPHIC_WAIT_SCREEN_CLEARED)
+        self.assertGreater(tv_menu._GRAPHIC_RENDER_RETRY_AFTER, time.monotonic())
+
+    def test_successful_v2_render_clears_the_retry_state(self):
+        tv_menu._GRAPHIC_UI_FAILED = True
+        tv_menu._GRAPHIC_RENDER_RETRY_AFTER = time.monotonic() + 10
+        tv_menu._GRAPHIC_WAIT_SCREEN_CLEARED = True
+        tv_menu._GRAPHIC_LAST_ERROR_LOG = time.monotonic()
+        tv_menu._mark_v2_render_success()
+        self.assertFalse(tv_menu._GRAPHIC_UI_FAILED)
+        self.assertEqual(tv_menu._GRAPHIC_RENDER_RETRY_AFTER, 0.0)
+        self.assertFalse(tv_menu._GRAPHIC_WAIT_SCREEN_CLEARED)
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
