@@ -4034,6 +4034,676 @@ def _reset_graphic_ui_cache():
             pass
 
 
+
+CAROUSEL_PRIORITY_KEYS = ("TETRIS", "INVADERS", "IMPOSTER", "2048")
+
+
+def _available_carousel_games():
+    """Return a stable, research-informed short list containing only launchable games."""
+    by_key = {
+        key: (label, key, GAME_DESCRIPTIONS.get(key, ""))
+        for label, _cmd, key, _two_player in GAME_OPTIONS
+    }
+    available = []
+    for key in CAROUSEL_PRIORITY_KEYS:
+        item = by_key.get(key)
+        if item is None:
+            continue
+        if key in ("IMPOSTER", "SNAKE", "TICTACTOE"):
+            available.append(item)
+            continue
+        commands = GAME_KEYS.get(key, [])
+        if commands and resolve_binary(commands[0]):
+            available.append(item)
+    return available
+
+
+def _recent_game_items():
+    """Return up to six saved, unique and currently launchable recent games."""
+    try:
+        raw = pitv_state.read_value("RECENT_GAMES", [])
+    except Exception:
+        raw = []
+    if not isinstance(raw, list):
+        return []
+    by_key = {
+        key: (label, key, GAME_DESCRIPTIONS.get(key, ""))
+        for label, _cmd, key, _two_player in GAME_OPTIONS
+    }
+    items = []
+    seen = set()
+    for value in raw:
+        key = str(value).strip().upper()
+        if not key or key in seen or key not in by_key:
+            continue
+        if key not in ("IMPOSTER", "SNAKE", "TICTACTOE"):
+            commands = GAME_KEYS.get(key, [])
+            if not commands or not resolve_binary(commands[0]):
+                continue
+        items.append(by_key[key])
+        seen.add(key)
+        if len(items) >= 6:
+            break
+    return items
+
+
+def _record_recent_game(game_key):
+    """Persist the newest successful game launch without ever adding duplicates."""
+    key = str(game_key or "").strip().upper()
+    valid = {item[2] for item in GAME_OPTIONS}
+    if not key or key not in valid:
+        return
+    try:
+        raw = pitv_state.read_value("RECENT_GAMES", [])
+        history = [str(x).strip().upper() for x in raw] if isinstance(raw, list) else []
+        history = [x for x in history if x != key and x in valid]
+        pitv_state.write_value("RECENT_GAMES", [key] + history[:11])
+    except Exception as exc:
+        log(f"Could not save Recently Played history: {type(exc).__name__}")
+
+
+def _settings_set_message(message, seconds=18.0):
+    """Keep transient output on screen only; never write message contents to logs."""
+    global settings_message, settings_message_until
+    settings_message = str(message or "")[:180]
+    settings_message_until = time.monotonic() + max(1.0, float(seconds))
+
+
+def _settings_read_flag(path, default=False):
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            value = handle.read().strip().lower()
+        return value == "on"
+    except OSError:
+        return bool(default)
+
+
+def _settings_pin_records():
+    emergency = pitv_secrets.emergency_code()
+    records = []
+    try:
+        permanent = pitv_state.load_section("PLAYER_PINS", {})
+    except Exception:
+        permanent = {}
+    if isinstance(permanent, dict):
+        for name, pin in permanent.items():
+            if str(pin) != emergency:
+                records.append({"name": str(name), "temporary": False})
+    seen = {record["name"] for record in records}
+    try:
+        for record in pitv_pins.temporary_records():
+            name = str(record.get("name", ""))
+            if name and name not in seen:
+                records.append({"name": name, "temporary": True,
+                                "expires_at": record.get("expires_at")})
+    except Exception:
+        pass
+    return sorted(records, key=lambda item: item["name"].casefold())
+
+
+def _settings_guest_names():
+    try:
+        data = pitv_state.load_section("GUEST_ACCOUNTS", {})
+        guests = data.get("guests", {}) if isinstance(data, dict) else {}
+        return sorted((str(name) for name in guests), key=str.casefold) if isinstance(guests, dict) else []
+    except Exception:
+        return []
+
+
+def _settings_guest_mode():
+    return _settings_read_flag(GUEST_MODE_FILE, False)
+
+
+def _settings_guest_locked():
+    return _settings_read_flag("/tmp/pitv-guest-lock", False)
+
+
+def _settings_current_items():
+    """Build the visible menu dynamically from real device state."""
+    page = settings_page
+    if page == "ROOT":
+        return [
+            ("Home Screen", "", "Carousel and Recently Played preferences", "PAGE", "HOME_SCREEN"),
+            ("Controllers", "", "Scan and pair Bluetooth gamepads", "PAGE", "CONTROLLERS"),
+            ("Player PINs", "", "Add, rename, change or remove game PINs", "PAGE", "PINS"),
+            ("Guest Access", "", "Guest Mode, accounts and sessions", "PAGE", "GUESTS"),
+            ("System & Updates", "", "Version, updates, restart and reboot", "PAGE", "SYSTEM"),
+            ("Logs", "", "Recent diagnostic output", "PAGE", "LOGS"),
+            ("Back to Home", "", "Return to the PiTV home screen", "BACK_HOME"),
+        ]
+    if page == "HOME_SCREEN":
+        try:
+            autoplay = bool(pitv_state.read_value("CAROUSEL_AUTOPLAY", True))
+        except Exception:
+            autoplay = True
+        try:
+            interval = int(pitv_state.read_value("CAROUSEL_INTERVAL", 8))
+        except Exception:
+            interval = 8
+        return [
+            ("Carousel autoplay", "ON" if autoplay else "OFF",
+             "Automatically advance the game carousel", "TOGGLE_CAROUSEL"),
+            ("Carousel interval", f"{interval}s",
+             "Cycle through 5, 8, 12 and 20 seconds", "CYCLE_CAROUSEL_INTERVAL"),
+            ("Clear Recently Played", "", "Remove the saved game history", "CONFIRM_CLEAR_RECENTS"),
+            ("Back", "", "Return to Settings", "BACK"),
+        ]
+    if page == "CONTROLLERS":
+        items = [
+            ("Scan for controllers", "", "Search nearby Bluetooth devices for 15 seconds", "BT_SCAN"),
+        ]
+        for device in settings_bt_devices[:8]:
+            name, address = str(device[0]), str(device[1])
+            items.append((name, "PAIR", f"Pair and connect {address}", "BT_PAIR", address))
+        items.extend([
+            ("Controller connection status", "", "Connected gamepads are logged by PiTV", "BT_STATUS"),
+            ("Back", "", "Return to Settings", "BACK"),
+        ])
+        return items
+    if page == "PINS":
+        items = [
+            ("Add player PIN", "", "Create a permanent six-digit game PIN", "PIN_ADD"),
+        ]
+        for record in _settings_pin_records():
+            name = record["name"]
+            items.append((name, "24H" if record.get("temporary") else "PIN",
+                          "Manage this player's game access", "PIN_OPEN", name))
+        items.append(("Back", "", "Return to Settings", "BACK"))
+        return items
+    if page == "PIN_DETAIL":
+        name = settings_selected_name
+        temporary = settings_selected_temporary
+        items = [
+            ("Change PIN", "", "Assign a new, unique six-digit PIN", "PIN_CHANGE"),
+        ]
+        if not temporary:
+            items.append(("Rename player", "", "Keep the existing PIN under a new name", "PIN_RENAME"))
+        items.extend([
+            ("Remove PIN", "", "Revoke this player's game access", "CONFIRM_PIN_REMOVE"),
+            ("Back", "", "Return to the PIN list", "BACK"),
+        ])
+        return items
+    if page == "GUESTS":
+        return [
+            ("Guest Mode", "ON" if _settings_guest_mode() else "OFF",
+             "Allow or block all guest sign-ins", "TOGGLE_GUEST_MODE"),
+            ("Guest controls", "LOCKED" if _settings_guest_locked() else "UNLOCKED",
+             "Pause or resume controls for signed-in guests", "TOGGLE_GUEST_LOCK"),
+            ("Create guest", "", "Create an account with a one-time displayed password", "GUEST_ADD"),
+            ("Remove a guest", "", "Choose an account to remove", "PAGE", "GUEST_REMOVE"),
+            ("Sign out all guests", "", "Invalidate all guest sessions immediately", "CONFIRM_GUEST_KICK"),
+            ("Back", "", "Return to Settings", "BACK"),
+        ]
+    if page == "GUEST_REMOVE":
+        names = _settings_guest_names()
+        items = [(name, "REMOVE", "Select to confirm guest removal", "GUEST_REMOVE_ONE", name)
+                 for name in names]
+        items.append(("Back", "", "Return to Guest Access", "BACK"))
+        return items
+    if page == "SYSTEM":
+        return [
+            ("Installed version", VERSION, "Version of the currently running menu", "SHOW_VERSION"),
+            ("Update experimental", "", "Back up settings and update from experimental", "CONFIRM_UPDATE_EXPERIMENTAL"),
+            ("Update stable / main", "", "Back up settings and update from main", "CONFIRM_UPDATE_STABLE"),
+            ("Restart PiTV menu", "", "Restart only the menu service", "CONFIRM_RESTART_MENU"),
+            ("Reboot Raspberry Pi", "", "Restart the entire device", "CONFIRM_REBOOT"),
+            ("Change admin code", "", "Replace the six-digit Settings authorisation code", "CHANGE_EMERGENCY_CODE"),
+            ("Back", "", "Return to Settings", "BACK"),
+        ]
+    if page == "LOGS":
+        return [
+            ("View recent logs", "", "Scroll through redacted diagnostic messages", "LOG_VIEW"),
+            ("Refresh logs", "", "Reload the current log file", "LOG_REFRESH"),
+            ("Clear logs", "", "Erase the PiTV diagnostic log", "CONFIRM_LOG_CLEAR"),
+            ("Back", "", "Return to Settings", "BACK"),
+        ]
+    if page == "CONFIRM":
+        return [
+            ("Cancel", "", "Leave the operation unchanged", "CONFIRM_CANCEL"),
+            ("Confirm", "", settings_confirm_label or "Proceed with this operation", "CONFIRM_DO"),
+        ]
+    return [("Back", "", "Return to Settings", "BACK")]
+
+
+_SETTINGS_PROTECTED_PAGES = {"CONTROLLERS", "PINS", "PIN_DETAIL", "GUESTS",
+                             "GUEST_REMOVE", "SYSTEM"}
+
+
+def _settings_open_page(page):
+    global current_view, settings_page, settings_selected
+    global settings_pending_page, settings_auth_entered, settings_key_row, settings_key_col
+    page = str(page)
+    if page in _SETTINGS_PROTECTED_PAGES and time.monotonic() >= settings_authorized_until:
+        settings_pending_page = page
+        settings_auth_entered = ""
+        settings_key_row = settings_key_col = 0
+        _settings_set_message("")
+        current_view = "SETTINGS_AUTH"
+        return
+    settings_page = page
+    settings_selected = 0
+    settings_key_row = settings_key_col = 0
+    current_view = "SETTINGS_LOG" if page == "LOGS_VIEW" else ("SETTINGS_CONFIRM" if page == "CONFIRM" else "SETTINGS")
+    if page == "LOGS_VIEW":
+        _settings_refresh_logs()
+
+
+def _settings_refresh_logs():
+    global settings_log_lines, settings_log_scroll
+    try:
+        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()[-120:]
+    except OSError:
+        lines = []
+    safe = []
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if re.search(r"\b(password|secret|token|NFC link|PIN:\s*\d{6}|emergency code)\b",
+                     line, flags=re.IGNORECASE):
+            line = re.sub(r"\b(password|secret|token|NFC link|PIN:\s*\d{6}|emergency code)\b",
+                          "[redacted]", line, flags=re.IGNORECASE)
+        safe.append(line)
+    settings_log_lines = safe
+    settings_log_scroll = max(0, len(safe)-18)
+
+
+def _settings_start_task(label, worker):
+    """Run slow system actions away from the input and framebuffer loops."""
+    global settings_busy
+    with settings_task_lock:
+        if settings_busy:
+            _settings_set_message(f"Busy: {settings_busy}. Please wait.")
+            return False
+        settings_busy = str(label)
+
+    def run():
+        global settings_busy
+        try:
+            worker()
+        except Exception as exc:
+            _settings_set_message(f"{label} failed: {type(exc).__name__}: {exc}")
+        finally:
+            with settings_task_lock:
+                settings_busy = ""
+    threading.Thread(target=run, name="pitv-settings-task", daemon=True).start()
+    return True
+
+
+def _settings_run_pin_command(args, operation, reveal_pin=False):
+    def worker():
+        command = ["/usr/bin/python3", "/opt/pitv/pin-admin.py"] + list(args)
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=12, check=False)
+        if proc.returncode:
+            message = (proc.stderr or proc.stdout or "PIN operation failed").strip().splitlines()
+            _settings_set_message((message[-1] if message else "PIN operation failed")[:160])
+            return
+        if reveal_pin:
+            match = re.search(r":\s*(\d{6})\s*$", proc.stdout.strip())
+            if match:
+                _settings_set_message(f"{operation}. New PIN: {match.group(1)}. Make a note of it.", 35)
+            else:
+                _settings_set_message(operation, 18)
+        else:
+            _settings_set_message(operation, 18)
+        log(f"Settings: {operation}")
+    return _settings_start_task(operation, worker)
+
+
+def _settings_run_guest_command(args, operation, reveal_password=""):
+    def worker():
+        proc = subprocess.run(
+            ["/usr/bin/python3", "/opt/pitv/guest-admin.py"] + list(args),
+            capture_output=True, text=True, timeout=20, check=False
+        )
+        if proc.returncode:
+            message = (proc.stderr or proc.stdout or "Guest operation failed").strip().splitlines()
+            _settings_set_message((message[-1] if message else "Guest operation failed")[:160])
+            return
+        if reveal_password:
+            _settings_set_message(f"{operation}. One-time password: {reveal_password}", 35)
+        else:
+            _settings_set_message(operation, 18)
+        log(f"Settings: {operation}")
+    return _settings_start_task(operation, worker)
+
+
+def _settings_set_guest_mode(enabled):
+    state = "on" if enabled else "off"
+    try:
+        with open(GUEST_MODE_FILE, "w", encoding="ascii") as handle:
+            handle.write(state)
+        if not enabled:
+            pair_clear()
+            _clear_web_keyboard_lease(owner_admin=False)
+        log(f"Guest mode -> {state} (on-TV Settings)")
+        _settings_set_message(f"Guest Mode is {state.upper()}.")
+    except OSError as exc:
+        _settings_set_message(f"Could not change Guest Mode: {exc}")
+
+
+def _settings_begin_text_input(prompt, mode, context):
+    global current_view, settings_input_prompt, settings_input_mode
+    global settings_input_context, settings_input_return_page, settings_text
+    global settings_key_row, settings_key_col
+    settings_input_prompt = str(prompt)
+    settings_input_mode = str(mode)
+    settings_input_context = str(context)
+    settings_input_return_page = settings_page
+    settings_text = ""
+    settings_key_row = settings_key_col = 0
+    _settings_set_message("")
+    current_view = "SETTINGS_INPUT"
+
+
+def _settings_begin_confirmation(action, label):
+    global current_view, settings_page, settings_selected
+    global settings_confirm_action, settings_confirm_label, settings_confirm_return_page
+    settings_confirm_action = str(action)
+    settings_confirm_label = str(label)
+    settings_confirm_return_page = settings_page
+    settings_page = "CONFIRM"
+    settings_selected = 0
+    current_view = "SETTINGS_CONFIRM"
+
+
+def _settings_home():
+    global current_view, home_focus, home_nav_selected
+    current_view = "MENU"
+    home_focus = "carousel"
+    home_nav_selected = 0
+    _settings_set_message("")
+
+
+def _settings_submit_input():
+    global settings_page, settings_selected_name, current_view
+    value = settings_text.strip()
+    context = settings_input_context
+    if context in ("PIN_ADD", "PIN_RENAME", "GUEST_ADD") and not value:
+        _settings_set_message("Enter a non-empty name.")
+        return
+    if context in ("PIN_ADD", "PIN_RENAME", "GUEST_ADD") and len(value) > 40:
+        _settings_set_message("Names must be no longer than 40 characters.")
+        return
+    if context == "PIN_ADD":
+        current_view = "SETTINGS"
+        settings_page = "PINS"
+        settings_selected = 0
+        _settings_run_pin_command(["assign", value], f"Created PIN for {value}", reveal_pin=True)
+    elif context == "PIN_RENAME":
+        old = settings_selected_name
+        current_view = "SETTINGS"
+        settings_page = "PIN_DETAIL"
+        settings_selected = 0
+        if value == old:
+            _settings_set_message("The name has not changed.")
+        else:
+            _settings_run_pin_command(["rename", old, value], f"Renamed {old} to {value}")
+            settings_selected_name = value
+    elif context == "PIN_CHANGE":
+        if not (len(value) == 6 and value.isdigit()):
+            _settings_set_message("PINs must be exactly six digits.")
+            return
+        name = settings_selected_name
+        current_view = "SETTINGS"
+        settings_page = "PIN_DETAIL"
+        settings_selected = 0
+        _settings_run_pin_command(["assign", name, "custom", value], f"Changed PIN for {name}")
+    elif context == "GUEST_ADD":
+        if value in _settings_guest_names():
+            _settings_set_message("That guest already exists. Choose a different name.")
+            return
+        password = secrets.token_urlsafe(9)
+        current_view = "SETTINGS"
+        settings_page = "GUESTS"
+        settings_selected = 0
+        _settings_run_guest_command(["password", "set", value, password],
+                                    f"Created guest {value}", reveal_password=password)
+    elif context == "EMERGENCY_CODE_CHANGE":
+        if not (len(value) == 6 and value.isdigit()):
+            _settings_set_message("The admin code must be exactly six digits.")
+            return
+        existing = pitv_state.load_section("PLAYER_PINS", {})
+        clash = next((name for name, pin in existing.items() if str(pin) == value), None) if isinstance(existing, dict) else None
+        if clash:
+            _settings_set_message(f"That code is already {clash}'s player PIN.")
+            return
+        if pitv_secrets.set_emergency_code(value):
+            log("Settings: emergency/admin code changed")
+            settings_page = "SYSTEM"
+            current_view = "SETTINGS"
+            settings_selected = 0
+            settings_authorized_until = 0.0
+            _settings_set_message("Admin code changed. Re-enter it to manage protected settings.")
+        else:
+            _settings_set_message("Could not save the admin code.")
+    else:
+        _settings_set_message("Unknown input action.")
+        return
+    if context != "EMERGENCY_CODE_CHANGE":
+        _settings_set_message("")
+
+
+def _settings_refresh_bluetooth():
+    global settings_bt_devices
+    if not shutil.which("bluetoothctl"):
+        _settings_set_message("Bluetooth tools unavailable. Deploy update with BlueZ installed.")
+        return
+    def worker():
+        log_path = "/tmp/pitv-settings-bluetooth.log"
+        try:
+            with open(log_path, "w", encoding="utf-8") as output:
+                proc = subprocess.Popen(
+                    ["bluetoothctl"], stdin=subprocess.PIPE, stdout=output,
+                    stderr=subprocess.STDOUT, text=True, start_new_session=True
+                )
+                proc.stdin.write("power on\nagent NoInputNoOutput\ndefault-agent\nscan on\n")
+                proc.stdin.flush()
+                time.sleep(15)
+                proc.stdin.write("devices\nscan off\nquit\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+                proc.wait(timeout=10)
+            proc2 = subprocess.run(["bluetoothctl", "devices"], capture_output=True,
+                                   text=True, timeout=5, check=False)
+            output_text = ""
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+                    output_text = handle.read()
+            except OSError:
+                pass
+            device_text = (proc2.stdout or "") + "\n" + output_text
+            found = {}
+            for line in device_text.splitlines():
+                match = re.match(r"\s*Device\s+([0-9A-Fa-f:]{17})\s+(.+?)\s*$", line)
+                if not match:
+                    continue
+                address, name = match.group(1).upper(), match.group(2).strip()
+                if not name or name.lower() in ("unknown", "none"):
+                    continue
+                if re.search(r"(controller|gamepad|joystick|joypad|xbox|playstation|dualshock|dualsense|8bitdo|wireless controller|joy.con)", name, re.I):
+                    found[address] = (name, address)
+            global settings_message
+            settings_bt_devices = sorted(found.values(), key=lambda pair: pair[0].casefold())[:8]
+            _settings_set_message(
+                f"Bluetooth scan complete: {len(settings_bt_devices)} likely controller(s) found."
+                if settings_bt_devices else
+                "No likely controllers found. Put the controller in pairing mode and scan again."
+            )
+            log(f"Settings: Bluetooth scan complete ({len(settings_bt_devices)} likely controllers)")
+        except Exception as exc:
+            settings_bt_devices = []
+            _settings_set_message(f"Bluetooth scan failed: {type(exc).__name__}: {exc}")
+    return _settings_start_task("Bluetooth scan", worker)
+
+
+def _settings_pair_bluetooth(address):
+    address = str(address).upper()
+    if not re.fullmatch(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}", address):
+        _settings_set_message("Invalid Bluetooth address.")
+        return False
+    def worker():
+        # Pair/trust/connect are BlueZ's supported control operations. The
+        # whole sequence runs off the menu loop and is never logged verbatim.
+        proc = subprocess.run(
+            ["bluetoothctl"],
+            input=f"power on\nagent NoInputNoOutput\ndefault-agent\npair {address}\ntrust {address}\nconnect {address}\nquit\n",
+            capture_output=True, text=True, timeout=35, check=False
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        if re.search(r"Pairing successful|AlreadyExists|already paired", out, re.I) and re.search(r"Connection successful|Connected: yes|already connected", out, re.I):
+            _settings_set_message("Controller paired and connected. If it does not respond, scan again.")
+            log("Settings: Bluetooth controller paired and connected")
+            _controller_scan_event.set()
+        elif "Connected: yes" in out:
+            _settings_set_message("Controller connected. Input listener will rescan.")
+            _controller_scan_event.set()
+        else:
+            _settings_set_message("Pairing did not complete. Put the controller in pairing mode and retry.")
+            log("Settings: Bluetooth pair/connect did not confirm success")
+    return _settings_start_task("Pairing controller", worker)
+
+
+def _settings_execute_confirm():
+    global current_view, settings_page, settings_selected, settings_authorized_until
+    action = settings_confirm_action
+    settings_page = settings_confirm_return_page
+    current_view = "SETTINGS_LOG" if settings_page == "LOGS_VIEW" else "SETTINGS"
+    if action == "CLEAR_RECENTS":
+        pitv_state.write_value("RECENT_GAMES", [])
+        _settings_set_message("Recently Played history cleared.")
+    elif action == "PIN_REMOVE":
+        name = settings_selected_name
+        _settings_run_pin_command(["remove", name], f"Removed PIN for {name}")
+        settings_page = "PINS"
+        settings_selected = 0
+    elif action == "GUEST_REMOVE":
+        name = settings_selected_name
+        _settings_run_guest_command(["remove", name], f"Removed guest {name}")
+        settings_page = "GUESTS"
+        settings_selected = 0
+    elif action == "GUEST_KICK":
+        _settings_run_guest_command(["kick"], "All guest sessions signed out")
+    elif action == "LOG_CLEAR":
+        log_clear()
+        _settings_refresh_logs()
+        _settings_set_message("PiTV log cleared.")
+    elif action == "UPDATE_EXPERIMENTAL":
+        _settings_start_maintenance("update", "experimental")
+    elif action == "UPDATE_STABLE":
+        _settings_start_maintenance("update", "main")
+    elif action == "RESTART_MENU":
+        _settings_start_maintenance("restart-menu")
+    elif action == "REBOOT":
+        _settings_start_maintenance("reboot")
+    else:
+        _settings_set_message("No operation was performed.")
+    settings_authorized_until = max(settings_authorized_until, time.monotonic() + 1.0)
+
+
+def _settings_select_action(item):
+    global current_view, settings_page, settings_selected
+    global settings_selected_name, settings_selected_temporary, settings_log_scroll
+    global settings_authorized_until
+    if not item or len(item) < 4:
+        return
+    action = str(item[3])
+    payload = str(item[4]) if len(item) > 4 else ""
+    if action == "PAGE":
+        _settings_open_page(payload)
+    elif action == "BACK":
+        if settings_page == "ROOT":
+            _settings_home()
+        elif settings_page in ("PIN_DETAIL",):
+            _settings_open_page("PINS")
+        elif settings_page == "GUEST_REMOVE":
+            _settings_open_page("GUESTS")
+        elif settings_page == "CONFIRM":
+            settings_page = settings_confirm_return_page
+            current_view = "SETTINGS"
+        elif settings_page == "LOGS_VIEW":
+            _settings_open_page("LOGS")
+        else:
+            _settings_open_page("ROOT")
+    elif action == "BACK_HOME":
+        _settings_home()
+    elif action == "TOGGLE_CAROUSEL":
+        current = bool(pitv_state.read_value("CAROUSEL_AUTOPLAY", True))
+        pitv_state.write_value("CAROUSEL_AUTOPLAY", not current)
+        _settings_set_message(f"Carousel autoplay {'enabled' if not current else 'disabled'}.")
+    elif action == "CYCLE_CAROUSEL_INTERVAL":
+        values = (5, 8, 12, 20)
+        current = int(pitv_state.read_value("CAROUSEL_INTERVAL", 8) or 8)
+        try:
+            next_value = values[(values.index(current)+1) % len(values)]
+        except ValueError:
+            next_value = values[0]
+        pitv_state.write_value("CAROUSEL_INTERVAL", next_value)
+        _settings_set_message(f"Carousel interval set to {next_value} seconds.")
+    elif action == "CONFIRM_CLEAR_RECENTS":
+        _settings_begin_confirmation("CLEAR_RECENTS", "Clear all Recently Played history?")
+    elif action == "BT_SCAN":
+        _settings_refresh_bluetooth()
+    elif action == "BT_PAIR":
+        _settings_pair_bluetooth(payload)
+    elif action == "BT_STATUS":
+        _controller_scan_event.set()
+        _settings_set_message("Controller listener asked to rescan connected gamepads.")
+    elif action == "PIN_ADD":
+        _settings_begin_text_input("Name for the new player PIN", "text", "PIN_ADD")
+    elif action == "PIN_OPEN":
+        settings_selected_name = payload
+        record = next((x for x in _settings_pin_records() if x["name"] == payload), {})
+        settings_selected_temporary = bool(record.get("temporary"))
+        _settings_open_page("PIN_DETAIL")
+    elif action == "PIN_CHANGE":
+        _settings_begin_text_input("Enter a new six-digit PIN", "pin", "PIN_CHANGE")
+    elif action == "PIN_RENAME":
+        _settings_begin_text_input("Enter the new player name", "text", "PIN_RENAME")
+    elif action == "CONFIRM_PIN_REMOVE":
+        _settings_begin_confirmation("PIN_REMOVE", f"Remove {settings_selected_name}'s game PIN?")
+    elif action == "TOGGLE_GUEST_MODE":
+        if time.monotonic() >= settings_authorized_until:
+            _settings_open_page("GUESTS")
+        else:
+            _settings_set_guest_mode(not _settings_guest_mode())
+    elif action == "TOGGLE_GUEST_LOCK":
+        new_state = "off" if _settings_guest_locked() else "on"
+        _settings_run_guest_command(["lock", new_state],
+                                    "Guest controls locked" if new_state == "on" else "Guest controls unlocked")
+    elif action == "GUEST_ADD":
+        _settings_begin_text_input("Name for the new guest account", "text", "GUEST_ADD")
+    elif action == "GUEST_REMOVE_ONE":
+        settings_selected_name = payload
+        _settings_begin_confirmation("GUEST_REMOVE", f"Remove guest account {payload}?")
+    elif action == "CONFIRM_GUEST_KICK":
+        _settings_begin_confirmation("GUEST_KICK", "Sign out every guest session?")
+    elif action == "SHOW_VERSION":
+        _settings_set_message(f"PiTV {VERSION}; menu interface V{UI_VERSION}.")
+    elif action == "CONFIRM_UPDATE_EXPERIMENTAL":
+        _settings_begin_confirmation("UPDATE_EXPERIMENTAL", "Update from experimental? Settings will be backed up.")
+    elif action == "CONFIRM_UPDATE_STABLE":
+        _settings_begin_confirmation("UPDATE_STABLE", "Update from stable/main? Settings will be backed up.")
+    elif action == "CONFIRM_RESTART_MENU":
+        _settings_begin_confirmation("RESTART_MENU", "Restart the PiTV menu service?")
+    elif action == "CONFIRM_REBOOT":
+        _settings_begin_confirmation("REBOOT", "Reboot the Raspberry Pi?")
+    elif action == "CHANGE_EMERGENCY_CODE":
+        _settings_begin_text_input("Enter the new six-digit admin code", "pin", "EMERGENCY_CODE_CHANGE")
+    elif action == "LOG_VIEW":
+        _settings_open_page("LOGS_VIEW")
+    elif action == "LOG_REFRESH":
+        _settings_refresh_logs()
+        _settings_set_message("Logs refreshed.")
+    elif action == "CONFIRM_LOG_CLEAR":
+        _settings_begin_confirmation("LOG_CLEAR", "Permanently clear the current PiTV log?")
+    elif action == "CONFIRM_CANCEL":
+        settings_page = settings_confirm_return_page
+        current_view = "SETTINGS"
+    elif action == "CONFIRM_DO":
+        _settings_execute_confirm()
+
+
+
 def _activate_home_selection(stdscr):
     global current_view
     _label, art_type, art_key = ART_OPTIONS[selected_art_idx]
