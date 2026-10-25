@@ -1493,6 +1493,8 @@ def _imposter_draw_results(stdscr,results,progress):
 
 def run_imposter(stdscr,players: list[str]) -> None:
     global controller_mode, _imposter_preparation, _IMPOSTER_DRAW_SCREEN
+    if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+        pitv_tvui.suspend_carousel()
     _IMPOSTER_DRAW_SCREEN = stdscr
     prep_item = None
     with _imposter_preparation_lock:
@@ -2462,6 +2464,8 @@ def run_external_art(stdscr, art_entry, duration):
     BACK/SELECT/CLEAR/HOME arrives so the exit remains responsive.
     """
     cmd_list, env_extras = art_entry
+    if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+        pitv_tvui.suspend_carousel()
     requested_binary = cmd_list[0]
     resolved_binary = resolve_binary(requested_binary)
     if not resolved_binary:
@@ -2541,6 +2545,8 @@ def run_game(stdscr, cmd_list: list):
     - Exits on BACK or HOME from the FIFO/controller.
     """
     global controller_mode, _current_game
+    if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+        pitv_tvui.suspend_carousel()
     binary = cmd_list[0]
 
     # ── Pre-flight: is the binary installed? (checks /usr/games too) ──
@@ -2690,6 +2696,8 @@ def run_snake(stdscr):
     no controller-to-keys mapper needed.
     """
     global controller_mode
+    if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+        pitv_tvui.suspend_carousel()
     _record_recent_game("SNAKE")
     log("Snake: start (built-in)")
     controller_mode = "GAME_INTERNAL"
@@ -2877,6 +2885,8 @@ def run_noughts(stdscr, vs_computer=False):
     external binary, so nothing to install or crash.
     """
     global controller_mode
+    if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+        pitv_tvui.suspend_carousel()
     _record_recent_game("TICTACTOE")
     log(f"Noughts & Crosses: start ({'1P vs CPU' if vs_computer else '2P'})")
     controller_mode = "GAME_INTERNAL"
@@ -3014,6 +3024,8 @@ def run_mirror(stdscr):
     for the framebuffer.
     """
     global controller_mode
+    if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+        pitv_tvui.suspend_carousel()
     UXPLAY_LOG = "/tmp/uxplay.log"
     MUSIC_DACP = "/tmp/pitv-uxplay-dacp"
     MUSIC_META = "/tmp/pitv-uxplay-metadata"
@@ -4941,6 +4953,12 @@ def main(stdscr):
 
         # ── View transition ──────────────────────────────────────────
         if current_view != last_view:
+            if (current_view != "MENU" and UI_VERSION == "2"
+                    and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None):
+                try:
+                    pitv_tvui.suspend_carousel()
+                except Exception as _carousel_stop_exc:
+                    log(f"Carousel suspension failed: {type(_carousel_stop_exc).__name__}")
             stdscr.clear()
             reset_renderer_state()
             # A console-based screensaver or game may have overwritten the
