@@ -7,6 +7,60 @@ from contextlib import contextmanager
 STATE_PATH = "/tmp/pitv-imposter-state.json"
 LOCK_PATH = "/tmp/pitv-imposter-state.lock"
 
+WORD_CATEGORIES = {
+    "Animals": (
+        "Dolphin", "Elephant", "Penguin", "Octopus", "Crocodile",
+        "Butterfly", "Giraffe", "Shark", "Panda", "Squirrel",
+        "Eagle", "Kangaroo", "Owl", "Hedgehog", "Chameleon",
+    ),
+    "Food & Drink": (
+        "Pizza", "Sushi", "Pancakes", "Chocolate", "Popcorn",
+        "Curry", "Lemonade", "Sandwich", "Ice cream", "Spaghetti",
+        "Watermelon", "Coffee", "Cheeseburger", "Doughnut", "Lasagne",
+    ),
+    "Countries": (
+        "Australia", "Brazil", "Canada", "Egypt", "France",
+        "Germany", "Greece", "India", "Italy", "Japan",
+        "Kenya", "Mexico", "New Zealand", "Spain", "Sweden",
+    ),
+    "Nature & Weather": (
+        "Volcano", "Tornado", "Rainbow", "Glacier", "Waterfall",
+        "Desert", "Jungle", "Coral reef", "Earthquake", "Aurora",
+        "Canyon", "Avalanche", "Tsunami", "Thunderstorm", "Forest",
+    ),
+    "Space": (
+        "Mars", "Saturn", "Moon", "Comet", "Black hole",
+        "Nebula", "Astronaut", "Telescope", "Spacesuit", "Meteor",
+        "Galaxy", "Rocket", "Solar eclipse", "Space station", "Satellite",
+    ),
+    "Sports": (
+        "Football", "Tennis", "Cricket", "Basketball", "Rugby",
+        "Swimming", "Skiing", "Cycling", "Fencing", "Golf",
+        "Badminton", "Skateboarding", "Volleyball", "Gymnastics", "Table tennis",
+    ),
+    "Technology": (
+        "Smartphone", "Robot", "Drone", "Keyboard", "Computer",
+        "Headphones", "3D printer", "Game controller", "Microchip", "Camera",
+        "Printer", "Wi-Fi router", "Electric car", "VR headset", "Smartwatch",
+    ),
+    "Transport": (
+        "Bicycle", "Submarine", "Helicopter", "Train", "Sailboat",
+        "Tram", "Motorbike", "Taxi", "Hot air balloon", "Tractor",
+        "Ferry", "Skateboard", "Ambulance", "Cable car", "Steam train",
+    ),
+    "Mythical Creatures": (
+        "Dragon", "Unicorn", "Phoenix", "Mermaid", "Griffin",
+        "Werewolf", "Ghost", "Wizard", "Goblin", "Centaur",
+        "Fairy", "Troll", "Cyclops", "Kraken", "Vampire",
+    ),
+    "Everyday Objects": (
+        "Compass", "Microscope", "Calculator", "Ruler", "Backpack",
+        "Whiteboard", "Glue stick", "Pencil sharpener", "Stopwatch", "Textbook",
+        "Globe", "Scissors", "Protractor", "Lunchbox", "Umbrella",
+    ),
+}
+
+
 def _read():
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
@@ -68,13 +122,14 @@ def _assign_roles(s):
         return
     imposter = secrets.choice(names)
     chooser = secrets.choice([n for n in names if n != imposter])
-    s["imposter"], s["word_picker"], s["word"] = imposter, chooser, ""
+    s["imposter"], s["word_picker"] = imposter, chooser
+    s["category"], s["word"] = "", ""
     s["votes"], s["results"], s["vote_ends_at"], s["reveal_at"] = {}, [], 0, 0
     s["turn_index"] = 0
     for p in s["players"]:
         p["role"] = "imposter" if p["name"] == imposter else "chooser" if p["name"] == chooser else "player"
         p["vote"] = ""
-    s["phase"] = "choose_word"
+    s["phase"] = "choose_category"
 
 def create_game(game_id, names, join_url):
     names = list(dict.fromkeys(str(n).strip() for n in names if str(n).strip()))
@@ -86,7 +141,7 @@ def create_game(game_id, names, join_url):
         "active": True, "game_id": game_id, "join_url": join_url, "phase": "join",
         "round_number": 1, "created_at": time.time(),
         "players": [{"name": n, "joined": False, "token": "", "role": "", "vote": ""} for n in names],
-        "imposter": "", "word_picker": "", "word": "", "turn_index": 0,
+        "imposter": "", "word_picker": "", "category": "", "word": "", "turn_index": 0,
         "votes": {}, "results": [], "vote_ends_at": 0, "reveal_at": 0, "error": ""
     }
     with _transaction(True) as s:
@@ -127,14 +182,32 @@ def player_view(game_id, token):
     names = [str(x.get("name", "")) for x in s.get("players", [])]
     joined = sum(1 for x in s.get("players", []) if x.get("joined"))
     idx = int(s.get("turn_index", 0) or 0)
+    role = str(p.get("role", ""))
     word = ""
+    category = ""
+    categories = []
+    words = []
+
+    # Send each role only the clue information it is entitled to see.
+    # The imposter receives the category, never the selected word, until reveal.
     if phase == "revealed":
         word = str(s.get("word", ""))
-    elif phase in ("round", "round_complete", "vote", "results") and p.get("role") != "imposter":
+        category = str(s.get("category", ""))
+    elif role == "imposter":
+        if phase in ("choose_word", "round", "round_complete", "vote", "results"):
+            category = str(s.get("category", ""))
+    elif role == "chooser" and phase == "choose_category":
+        categories = list(WORD_CATEGORIES.keys())
+    elif role == "chooser" and phase == "choose_word":
+        category = str(s.get("category", ""))
+        words = list(WORD_CATEGORIES.get(category, ()))
+    elif phase in ("round", "round_complete", "vote", "results") and role != "imposter":
         word = str(s.get("word", ""))
+
     return {
         "ok": True, "active": bool(s.get("active")), "phase": phase,
-        "you": str(p.get("name", "")), "role": str(p.get("role", "")), "word": word,
+        "you": str(p.get("name", "")), "role": role, "word": word,
+        "category": category, "categories": categories, "words": words,
         "players": names, "joined_count": joined, "player_count": len(names),
         "round_number": int(s.get("round_number", 1) or 1),
         "current_turn": names[idx] if 0 <= idx < len(names) else "",
@@ -143,6 +216,24 @@ def player_view(game_id, token):
         "results": copy.deepcopy(s.get("results", [])) if phase in ("results", "revealed") else [],
         "imposter": str(s.get("imposter", "")) if phase == "revealed" else "",
     }
+def choose_category(game_id, token, category):
+    category = " ".join(str(category).split())
+    canonical = next(
+        (name for name in WORD_CATEGORIES if name.casefold() == category.casefold()),
+        None,
+    )
+    if canonical is None:
+        return {"ok": False, "error": "invalid_category"}
+    with _transaction(True) as s:
+        p = _player_for_token(s, token)
+        if (not s.get("active") or s.get("game_id") != game_id
+                or s.get("phase") != "choose_category" or not p
+                or p.get("role") != "chooser"):
+            return {"ok": False, "error": "not_word_chooser"}
+        s["category"], s["word"] = canonical, ""
+        s["phase"] = "choose_word"
+        return {"ok": True, "category": canonical}
+
 
 def choose_word(game_id, token, word):
     word = " ".join(str(word).split())
@@ -150,11 +241,20 @@ def choose_word(game_id, token, word):
         return {"ok": False, "error": "invalid_word"}
     with _transaction(True) as s:
         p = _player_for_token(s, token)
-        if not s.get("active") or s.get("game_id") != game_id or s.get("phase") != "choose_word" or not p or p.get("role") != "chooser":
+        if (not s.get("active") or s.get("game_id") != game_id
+                or s.get("phase") != "choose_word" or not p
+                or p.get("role") != "chooser"):
             return {"ok": False, "error": "not_word_chooser"}
-        s["word"], s["phase"], s["turn_index"] = word, "round", 0
+        category = str(s.get("category", ""))
+        allowed = WORD_CATEGORIES.get(category, ())
+        canonical = next(
+            (candidate for candidate in allowed if candidate.casefold() == word.casefold()),
+            None,
+        )
+        if canonical is None:
+            return {"ok": False, "error": "invalid_word"}
+        s["word"], s["phase"], s["turn_index"] = canonical, "round", 0
         return {"ok": True}
-
 def set_vote(game_id, token, target):
     with _transaction(True) as s:
         p = _player_for_token(s, token)
