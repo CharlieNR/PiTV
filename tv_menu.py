@@ -4731,6 +4731,14 @@ def _activate_home_selection(stdscr):
 
 def main(stdscr):
     global current_view, selected_art_idx, selected_game_idx, selected_dur_idx
+    global home_focus, home_nav_selected, selected_recent_idx
+    global settings_page, settings_selected, settings_authorized_until
+    global settings_pending_page, settings_auth_entered, settings_key_row, settings_key_col
+    global settings_message, settings_message_until, settings_input_prompt
+    global settings_input_mode, settings_input_context, settings_input_return_page, settings_text
+    global settings_selected_name, settings_selected_temporary
+    global settings_confirm_action, settings_confirm_label, settings_confirm_return_page
+    global settings_log_scroll, settings_log_lines
     global imposter_count_options, imposter_count_selected, imposter_target_count
     global imposter_pin_stage, imposter_players
     global active_art_type, art_stop_time, should_clear_screen
@@ -4904,8 +4912,14 @@ def main(stdscr):
                 continue
 
             # ── HOME: return to main menu from anywhere ──────────────
+            if cmd == "OPEN_SETTINGS":
+                if not hard_locked and not system_locked and controller_mode != "GAME_EXTERNAL":
+                    _settings_open_page("ROOT")
+                break
+
             if cmd == "HOME":
                 current_view = "MENU"
+                home_focus = "carousel"
                 break
 
             if cmd == "CLEAR":
@@ -4947,16 +4961,68 @@ def main(stdscr):
             # ── View-specific handling ───────────────────────────────
             if current_view == "MENU":
                 if UI_VERSION == "2":
-                    # The image-led home screen is a single horizontal shelf.
-                    # Let either axis browse it, so every remote's D-pad works.
-                    if cmd in ("LEFT", "UP"):
-                        selected_art_idx = (selected_art_idx - 1) % len(ART_OPTIONS)
-                    elif cmd in ("RIGHT", "DOWN"):
-                        selected_art_idx = (selected_art_idx + 1) % len(ART_OPTIONS)
-                    elif cmd == "SELECT":
-                        _activate_home_selection(stdscr)
-                    elif cmd == "BACK":
-                        pass
+                    if home_focus == "carousel":
+                        if cmd == "LEFT":
+                            if GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+                                pitv_tvui.request_carousel_step(-1)
+                        elif cmd == "RIGHT":
+                            if GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
+                                pitv_tvui.request_carousel_step(1)
+                        elif cmd == "UP":
+                            home_focus = "nav"
+                            home_nav_selected = 0
+                        elif cmd == "DOWN":
+                            home_focus = "shortcuts"
+                        elif cmd == "SELECT":
+                            _launch_home_carousel_game(stdscr)
+                        elif cmd == "BACK":
+                            pass
+                    elif home_focus == "shortcuts":
+                        if cmd == "LEFT":
+                            selected_art_idx = (selected_art_idx-1) % len(ART_OPTIONS)
+                        elif cmd == "RIGHT":
+                            selected_art_idx = (selected_art_idx+1) % len(ART_OPTIONS)
+                        elif cmd == "UP":
+                            home_focus = "carousel"
+                        elif cmd == "DOWN":
+                            home_focus = "recent"
+                            selected_recent_idx = 0
+                        elif cmd == "SELECT":
+                            _activate_home_selection(stdscr)
+                        elif cmd == "BACK":
+                            home_focus = "carousel"
+                    elif home_focus == "recent":
+                        recent_items = _recent_game_items()
+                        if cmd == "LEFT" and recent_items:
+                            selected_recent_idx = max(0, selected_recent_idx-1)
+                        elif cmd == "RIGHT" and recent_items:
+                            selected_recent_idx = min(len(recent_items)-1, selected_recent_idx+1)
+                        elif cmd == "UP":
+                            home_focus = "shortcuts"
+                            selected_art_idx = 4
+                        elif cmd == "SELECT" and recent_items:
+                            _launch_home_game_key(stdscr, recent_items[selected_recent_idx][1])
+                        elif cmd == "BACK":
+                            home_focus = "shortcuts"
+                    elif home_focus == "nav":
+                        if cmd == "LEFT":
+                            home_nav_selected = (home_nav_selected-1) % 4
+                        elif cmd == "RIGHT":
+                            home_nav_selected = (home_nav_selected+1) % 4
+                        elif cmd == "DOWN":
+                            home_focus = "carousel"
+                        elif cmd == "SELECT":
+                            if home_nav_selected == 0:
+                                home_focus = "carousel"
+                            elif home_nav_selected == 1:
+                                selected_art_idx = 0
+                                current_view = "DURATION_SELECT"
+                            elif home_nav_selected == 2:
+                                current_view = "GAMES_MENU"
+                            else:
+                                _settings_open_page("ROOT")
+                        elif cmd == "BACK":
+                            home_focus = "carousel"
                 else:
                     if cmd == "UP":
                         selected_art_idx = (selected_art_idx-1) % len(ART_OPTIONS)
@@ -4966,6 +5032,119 @@ def main(stdscr):
                         _activate_home_selection(stdscr)
                     elif cmd in ("BACK","LEFT"):
                         pass  # already at root
+
+            elif current_view in ("SETTINGS", "SETTINGS_CONFIRM"):
+                if cmd == "UP":
+                    settings_selected = max(0, settings_selected-1)
+                elif cmd == "DOWN":
+                    settings_selected = min(len(_settings_current_items())-1, settings_selected+1)
+                elif cmd in ("LEFT", "RIGHT") and settings_page == "CONFIRM":
+                    settings_selected = 1-settings_selected
+                elif cmd == "BACK":
+                    items = _settings_current_items()
+                    _settings_select_action(("Back", "", "", "BACK"))
+                elif cmd == "SELECT":
+                    items = _settings_current_items()
+                    if items:
+                        settings_selected = max(0, min(settings_selected, len(items)-1))
+                        _settings_select_action(items[settings_selected])
+
+            elif current_view == "SETTINGS_AUTH":
+                keypad_layout = [["1","2","3"],["4","5","6"],["7","8","9"],["DEL","0","OK"]]
+                if cmd == "UP":
+                    settings_key_row = max(0, settings_key_row-1)
+                elif cmd == "DOWN":
+                    settings_key_row = min(3, settings_key_row+1)
+                elif cmd == "LEFT":
+                    settings_key_col = max(0, settings_key_col-1)
+                elif cmd == "RIGHT":
+                    settings_key_col = min(2, settings_key_col+1)
+                elif cmd == "BACK":
+                    settings_auth_entered = ""
+                    _settings_open_page("ROOT")
+                elif cmd == "SELECT":
+                    key = keypad_layout[settings_key_row][settings_key_col]
+                    if key == "DEL":
+                        settings_auth_entered = settings_auth_entered[:-1]
+                    elif key == "OK":
+                        if pitv_secrets.check_emergency_code(settings_auth_entered):
+                            settings_authorized_until = time.monotonic()+300.0
+                            settings_page = settings_pending_page
+                            settings_selected = 0
+                            current_view = "SETTINGS"
+                            settings_auth_entered = ""
+                            _settings_set_message("Authorised for five minutes.")
+                            if pitv_secrets.is_default_emergency_code():
+                                _settings_set_message("Warning: the admin code is still public default 000000.")
+                        else:
+                            settings_auth_entered = ""
+                            _settings_set_message("Incorrect code. Try again.")
+                    elif key.isdigit() and len(settings_auth_entered) < 6:
+                        settings_auth_entered += key
+                        if len(settings_auth_entered) == 6:
+                            if pitv_secrets.check_emergency_code(settings_auth_entered):
+                                settings_authorized_until = time.monotonic()+300.0
+                                settings_page = settings_pending_page
+                                settings_selected = 0
+                                current_view = "SETTINGS"
+                                settings_auth_entered = ""
+                                _settings_set_message("Authorised for five minutes.")
+                                if pitv_secrets.is_default_emergency_code():
+                                    _settings_set_message("Warning: the admin code is still public default 000000.")
+                            else:
+                                settings_auth_entered = ""
+                                _settings_set_message("Incorrect code. Try again.")
+
+            elif current_view == "SETTINGS_INPUT":
+                if settings_input_mode in ("pin", "auth_pin"):
+                    input_layout = [["1","2","3"],["4","5","6"],["7","8","9"],["DEL","0","OK"]]
+                else:
+                    input_layout = [
+                        list("ABCDEFG"), list("HIJKLMN"), list("OPQRSTU"),
+                        ["V","W","X","Y","Z","_","<"],
+                        ["0","1","2","3","4","5","6"],
+                        ["7","8","9","-",".","@","DONE"],
+                    ]
+                if cmd == "UP":
+                    settings_key_row = max(0, settings_key_row-1)
+                    settings_key_col = min(settings_key_col, len(input_layout[settings_key_row])-1)
+                elif cmd == "DOWN":
+                    settings_key_row = min(len(input_layout)-1, settings_key_row+1)
+                    settings_key_col = min(settings_key_col, len(input_layout[settings_key_row])-1)
+                elif cmd == "LEFT":
+                    settings_key_col = max(0, settings_key_col-1)
+                elif cmd == "RIGHT":
+                    settings_key_col = min(len(input_layout[settings_key_row])-1, settings_key_col+1)
+                elif cmd == "BACK":
+                    settings_text = ""
+                    settings_input_context = ""
+                    settings_page = settings_input_return_page
+                    current_view = "SETTINGS"
+                elif cmd == "SELECT":
+                    key = input_layout[settings_key_row][settings_key_col]
+                    if key in ("DEL", "<"):
+                        settings_text = settings_text[:-1]
+                    elif key in ("OK", "DONE"):
+                        _settings_submit_input()
+                    elif key == "_":
+                        if len(settings_text) < 40:
+                            settings_text += " "
+                    elif len(key) == 1 and (key.isalnum() or key in "-.@"):
+                        max_length = 6 if settings_input_mode == "pin" else 40
+                        if len(settings_text) < max_length:
+                            settings_text += key
+
+            elif current_view == "SETTINGS_LOG":
+                if cmd == "UP":
+                    settings_log_scroll = max(0, settings_log_scroll-1)
+                elif cmd == "DOWN":
+                    settings_log_scroll = min(max(0, len(settings_log_lines)-18), settings_log_scroll+1)
+                elif cmd == "SELECT":
+                    _settings_refresh_logs()
+                elif cmd == "LEFT":
+                    _settings_begin_confirmation("LOG_CLEAR", "Permanently clear the current PiTV log?")
+                elif cmd == "BACK":
+                    _settings_open_page("LOGS")
 
             elif current_view == "DURATION_SELECT":
                 if UI_VERSION == "2":
@@ -5152,7 +5331,9 @@ def main(stdscr):
                 hard_locked or system_locked
                 or current_view in (
                     "MENU", "DURATION_SELECT", "GAMES_MENU", "TTT_MODE",
-                    "IMPOSTER_COUNT", "KEYPAD", "LOCKED", "CLEAR", "FAKE_OFF"
+                    "IMPOSTER_COUNT", "KEYPAD", "LOCKED", "CLEAR", "FAKE_OFF",
+                    "SETTINGS", "SETTINGS_AUTH", "SETTINGS_INPUT", "SETTINGS_STATUS",
+                    "SETTINGS_LOG", "SETTINGS_CONFIRM"
                 )
             )
         )
@@ -5306,6 +5487,43 @@ def main(stdscr):
                     _graphic_keypad_entered = lock_entered
                     _graphic_keypad_error = lock_error
 
+                _graphic_carousel = _available_carousel_games()
+                _graphic_recent = _recent_game_items()
+                try:
+                    _graphic_autoplay = bool(pitv_state.read_value("CAROUSEL_AUTOPLAY", True))
+                    _graphic_interval = int(pitv_state.read_value("CAROUSEL_INTERVAL", 8) or 8)
+                except Exception:
+                    _graphic_autoplay, _graphic_interval = True, 8
+                _graphic_settings_items = _settings_current_items()
+                _graphic_settings_message = settings_message
+                if settings_busy:
+                    _graphic_settings_message = f"{settings_busy} in progress..."
+                _graphic_settings_label = {
+                    "ROOT": "Settings",
+                    "HOME_SCREEN": "Settings / Home Screen",
+                    "CONTROLLERS": "Settings / Controllers",
+                    "PINS": "Settings / Player PINs",
+                    "PIN_DETAIL": "Settings / Player PINs / " + settings_selected_name,
+                    "GUESTS": "Settings / Guest Access",
+                    "GUEST_REMOVE": "Settings / Guest Access / Remove Guest",
+                    "SYSTEM": "Settings / System & Updates",
+                    "LOGS": "Settings / Logs",
+                    "CONFIRM": "Settings / Confirm Action",
+                    "LOGS_VIEW": "Settings / Logs / Recent Entries",
+                }.get(settings_page, "Settings")
+                _graphic_settings_desc = {
+                    "ROOT": "Manage PiTV directly with your remote.",
+                    "HOME_SCREEN": "Personalise the carousel and game history.",
+                    "CONTROLLERS": "Pair a gamepad, then wait for its controls to appear.",
+                    "PINS": "PIN values are hidden unless they are newly generated.",
+                    "PIN_DETAIL": "Manage " + settings_selected_name + "'s game access.",
+                    "GUESTS": "Changes take effect on the existing guest portal.",
+                    "GUEST_REMOVE": "Removing an account also removes its associated player PIN.",
+                    "SYSTEM": "Sensitive actions require administrator authorisation.",
+                    "LOGS": "Log entries are filtered for credential-like text.",
+                    "CONFIRM": "Review the operation before proceeding.",
+                    "LOGS_VIEW": "Most recent events first; use Up and Down to scroll.",
+                }.get(settings_page, "Settings")
                 _graphic_state = {
                     "view": graphic_view,
                     "hard_locked": bool(hard_locked),
@@ -5318,6 +5536,27 @@ def main(stdscr):
                     "home_items": _graphic_home_items,
                     "games": _graphic_games,
                     "durations": [label.upper() for label, _seconds in DURATION_OPTIONS],
+                    "carousel_games": _graphic_carousel,
+                    "carousel_index": pitv_tvui.carousel_index() if pitv_tvui is not None else 0,
+                    "carousel_autoplay": _graphic_autoplay,
+                    "carousel_interval": _graphic_interval,
+                    "recent_games": _graphic_recent,
+                    "home_focus": home_focus,
+                    "nav_selected": home_nav_selected,
+                    "selected_recent": selected_recent_idx,
+                    "settings_path_label": _graphic_settings_label,
+                    "settings_description": _graphic_settings_desc,
+                    "settings_items": _graphic_settings_items,
+                    "settings_selected": settings_selected,
+                    "settings_message": _graphic_settings_message,
+                    "settings_auth_entered": settings_auth_entered,
+                    "settings_key_row": settings_key_row,
+                    "settings_key_col": settings_key_col,
+                    "settings_input_prompt": settings_input_prompt,
+                    "settings_input_mode": settings_input_mode,
+                    "settings_text": settings_text,
+                    "settings_log_lines": settings_log_lines,
+                    "settings_log_scroll": settings_log_scroll,
                     "ttt_selected": ttt_sel,
                     "imposter_counts": list(imposter_count_options),
                     "imposter_count_index": imposter_count_selected,
