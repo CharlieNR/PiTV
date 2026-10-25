@@ -279,6 +279,16 @@ if ! (
 ); then
     echo "WARNING: V2 icon prewarming failed; deployment will continue."
 fi
+# Also pre-build home shortcut artwork and the first carousel animation sizes.
+# The menu repeats this in-memory warm-up on startup, but this pass populates
+# the user's persistent poster/icon cache during deployment.
+if ! (
+    cd /opt/pitv
+    sudo -u "$PITV_USER" -H /usr/bin/env PYTHONPATH=/opt/pitv \
+        /usr/bin/python3 -c 'import pitv_tvui; print("Prepared V2 home render cache:", pitv_tvui.warm_render_cache())'
+); then
+    echo "WARNING: V2 home artwork prewarming failed; deployment will continue."
+fi
 
 STATE_FILE="$PITV_HOME/.pitv/pitv-state.json"
 if sudo -u "$PITV_USER" -H test -f "$STATE_FILE"; then
