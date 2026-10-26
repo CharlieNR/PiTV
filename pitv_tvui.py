@@ -573,27 +573,14 @@ def _nav(canvas, section, clock_text, nav_focus=False, nav_selected=0):
         ("GAMES", "GAMES_MENU", 414, "gamepad-2"),
         ("SETTINGS", "SETTINGS", 536, "settings"),
     ]
-    setting_views = {
-        "SETTINGS", "SETTINGS_AUTH", "SETTINGS_INPUT",
-        "SETTINGS_STATUS", "SETTINGS_LOG", "SETTINGS_CONFIRM",
-    }
-    for index, (label, active_view, x, icon_name) in enumerate(items):
-        active = (
-            (section == "HOME" and label == "HOME")
-            or (section == "SCREENS" and label == "SCREENS")
-            or (section == "GAMES" and label == "GAMES")
-            or (section in setting_views and label == "SETTINGS")
-        )
+    for index, (label, _active_view, x, icon_name) in enumerate(items):
         focused = bool(nav_focus and index == int(nav_selected))
-        if active or focused:
-            d.rounded_rectangle((x-13, 15, x+96, 51), radius=16,
-                                fill=(25, 71, 130) if active or focused else PANEL)
-            d.rounded_rectangle((x-13, 46, x+96, 50), radius=2,
-                                fill=CYAN if focused or active else (39, 63, 99))
+        if focused:
+            d.rounded_rectangle((x-13, 15, x+96, 51), radius=16, fill=(25, 71, 130))
+            d.rounded_rectangle((x-13, 46, x+96, 50), radius=2, fill=CYAN)
         icon = pitv_artwork.load_icon(icon_name, size=19)
         canvas.paste(icon, (x-1, 20), icon)
-        _label(d, (x+24, 25), label, 13,
-               WHITE if active or focused else MUTED, active or focused)
+        _label(d, (x+24, 25), label, 13, WHITE if focused else MUTED, focused)
     _label(d, (1230, 29), clock_text, 15, MUTED, anchor="ra")
     d.line((40, 62, 1240, 62), fill=(35, 59, 94), width=1)
 
