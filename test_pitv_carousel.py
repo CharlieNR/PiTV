@@ -26,6 +26,7 @@ class CarouselSmokeTests(unittest.TestCase):
                     ("IMPOSTER", "IMPOSTER", "Party game"),
                     ("2048", "2048", "Number puzzle"),
                 ],
+                "focused": True,
                 "position": 0.0,
                 "target": None,
                 "generation": 100,
@@ -48,6 +49,48 @@ class CarouselSmokeTests(unittest.TestCase):
         strip = pitv_tvui._draw_carousel_strip([], 0)
         self.assertEqual(strip.size, (pitv_tvui.WIDTH, 295))
         self.assertEqual(strip.mode, "RGB")
+
+    def test_centre_card_highlight_is_only_shown_when_carousel_has_focus(self):
+        items = [("TETRIS", "TETRIS", "Puzzle game")]
+
+        def fake_artwork(key, width, height, source_width, source_height):
+            return Image.new("RGB", (width, height), (30, 60, 90))
+
+        with patch.object(pitv_tvui, "_fitted_artwork", side_effect=fake_artwork):
+            focused_strip = pitv_tvui._draw_carousel_strip(items, 0, focused=True)
+            unfocused_strip = pitv_tvui._draw_carousel_strip(items, 0, focused=False)
+
+        centre_edge = (pitv_tvui.WIDTH // 2, 27)
+        self.assertEqual(focused_strip.getpixel(centre_edge), pitv_tvui.CYAN)
+        self.assertEqual(unfocused_strip.getpixel(centre_edge), (35, 64, 103))
+
+    def test_home_only_gives_carousel_focus_when_carousel_region_is_focused(self):
+        canvas = Image.new("RGB", (pitv_tvui.WIDTH, pitv_tvui.HEIGHT), (0, 0, 0))
+        state = {
+            "home_items": [("MATRIX RAIN", "MATRIX", "Open Matrix Rain")],
+            "selected_art": 0,
+            "home_focus": "shortcuts",
+            "nav_selected": 3,
+            "carousel_games": [],
+            "carousel_index": 0,
+            "recent_games": [],
+        }
+        with (
+            patch.object(pitv_tvui, "_draw_carousel_strip", return_value=Image.new("RGB", (pitv_tvui.WIDTH, 295))) as draw_strip,
+            patch.object(pitv_tvui, "_label"),
+            patch.object(pitv_tvui, "_cover"),
+        ):
+            pitv_tvui._draw_home(canvas, state)
+        self.assertFalse(draw_strip.call_args.kwargs["focused"])
+
+        state["home_focus"] = "carousel"
+        with (
+            patch.object(pitv_tvui, "_draw_carousel_strip", return_value=Image.new("RGB", (pitv_tvui.WIDTH, 295))) as draw_strip,
+            patch.object(pitv_tvui, "_label"),
+            patch.object(pitv_tvui, "_cover"),
+        ):
+            pitv_tvui._draw_home(canvas, state)
+        self.assertTrue(draw_strip.call_args.kwargs["focused"])
 
     def test_cards_render_without_game_art_assets_or_framebuffer(self):
         def fake_artwork(key, width, height, source_width, source_height):
@@ -129,6 +172,27 @@ class CarouselSmokeTests(unittest.TestCase):
         self.assertFalse(pitv_tvui.request_carousel_step(1))
         self.assertIsNone(pitv_tvui._CAROUSEL["target"])
 
+
+class NavigationFocusTests(unittest.TestCase):
+    def _render_nav(self, section, nav_focus, nav_selected):
+        canvas = Image.new("RGB", (pitv_tvui.WIDTH, pitv_tvui.HEIGHT), (0, 0, 0))
+
+        def transparent_icon(_name, size):
+            return Image.new("RGBA", (size, size), (0, 0, 0, 0))
+
+        with patch.object(pitv_tvui.pitv_artwork, "load_icon", side_effect=transparent_icon):
+            pitv_tvui._nav(canvas, section, "12:00", nav_focus, nav_selected)
+        return canvas
+
+    def test_only_focused_nav_item_is_highlighted_even_if_home_is_current_section(self):
+        canvas = self._render_nav("HOME", True, 3)
+        self.assertEqual(canvas.getpixel((250, 42)), (0, 0, 0))
+        self.assertEqual(canvas.getpixel((600, 42)), (25, 71, 130))
+
+    def test_current_section_is_not_highlighted_without_navigation_focus(self):
+        canvas = self._render_nav("SETTINGS", False, 0)
+        self.assertEqual(canvas.getpixel((600, 42)), (0, 0, 0))
+        self.assertEqual(canvas.getpixel((250, 42)), (0, 0, 0))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
