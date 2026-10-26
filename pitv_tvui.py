@@ -597,8 +597,8 @@ def _with_hero_shade(cover, left_alpha=185):
     return Image.alpha_composite(cover, overlay).convert("RGB")
 
 
-def _draw_carousel_strip(items, position):
-    """Render only the carousel strip; cards and source art are reused from LRU caches."""
+def _draw_carousel_strip(items, position, focused=True):
+    """Render the carousel strip, highlighting the centre card only while focused."""
     strip = Image.new("RGB", (WIDTH, 295), (7, 13, 30))
     d = ImageDraw.Draw(strip)
     for band in range(24):
@@ -639,13 +639,14 @@ def _draw_carousel_strip(items, position):
         x0 = cx - card_w // 2
         y0 = 30 + (218 - card_h) // 2
         x1, y1 = x0 + card_w, y0 + card_h
-        active = abs_distance < 0.5
-        edge = CYAN if active else (35, 64, 103)
-        edge_width = 3 if active else 1
+        centered = abs_distance < 0.5
+        highlighted = centered and bool(focused)
+        edge = CYAN if highlighted else (35, 64, 103)
+        edge_width = 3 if highlighted else 1
         d.rounded_rectangle((x0-3, y0-3, x1+3, y1+3), radius=20,
                             fill=(15, 31, 57), outline=edge, width=edge_width)
         art = _fitted_artwork(str(key), card_w-10, card_h-10, 500, 260)
-        if not active:
+        if not centered:
             art = Image.blend(art, Image.new("RGB", art.size, (3, 7, 18)),
                               min(0.54, 0.20 + abs_distance * 0.15))
         mask = _cover_mask(art.width, art.height, 15)
@@ -653,10 +654,10 @@ def _draw_carousel_strip(items, position):
         # A dark lower ribbon keeps titles legible over any game artwork.
         d.rounded_rectangle((x0+5, y1-57, x1-5, y1-5), radius=12,
                             fill=(5, 12, 27))
-        title_size = 22 if active else 16
+        title_size = 22 if centered else 16
         _label(d, (cx, y1-39), title, title_size,
-               WHITE if active else (195, 208, 229), True, anchor="mm")
-        if active and card_w > 350:
+               WHITE if highlighted else (195, 208, 229), highlighted, anchor="mm")
+        if highlighted and card_w > 350:
             detail = str(description or "").strip()
             if len(detail) > 58:
                 detail = detail[:55].rstrip() + "..."
@@ -669,7 +670,7 @@ def _draw_carousel_strip(items, position):
     selected = int(round(pos)) % count
     for idx in range(count):
         x = x_start + idx * dot_gap
-        if idx == selected:
+        if idx == selected and focused:
             d.rounded_rectangle((x-4, 275, x+12, 282), radius=4, fill=CYAN)
         else:
             d.ellipse((x, 276, x+6, 282), fill=(91, 112, 145))
@@ -685,6 +686,7 @@ _CAROUSEL_ANIMATION_STEPS = 6
 _CAROUSEL = {
     "view": None,
     "items": [],
+    "focused": True,
     "position": 0.0,
     "target": None,
     "generation": 0,
@@ -758,6 +760,7 @@ def _sync_carousel_runtime(state):
     global _CAROUSEL_THREAD
     items = [tuple(item) for item in state.get("carousel_games", [])]
     view = str(state.get("view", ""))
+    focused = view == "MENU" and str(state.get("home_focus", "carousel")) == "carousel"
     enabled = bool(state.get("carousel_autoplay", True))
     try:
         interval = min(30.0, max(4.0, float(state.get("carousel_interval", 8))))
@@ -767,11 +770,13 @@ def _sync_carousel_runtime(state):
         old_items = _CAROUSEL["items"]
         changed_items = items != old_items
         changed_view = view != _CAROUSEL["view"]
+        changed_focus = focused != bool(_CAROUSEL["focused"])
         changed_settings = enabled != _CAROUSEL["autoplay"] or interval != _CAROUSEL["interval"]
         _CAROUSEL["view"] = view
+        _CAROUSEL["focused"] = focused
         _CAROUSEL["autoplay"] = enabled
         _CAROUSEL["interval"] = interval
-        runtime_changed = changed_items or changed_view or changed_settings
+        runtime_changed = changed_items or changed_view or changed_focus or changed_settings
         if changed_items:
             _CAROUSEL["items"] = items
             requested = max(0, int(state.get("carousel_index", 0) or 0))
@@ -787,6 +792,9 @@ def _sync_carousel_runtime(state):
         elif changed_view and view == "MENU":
             _CAROUSEL["position"] = float(round(_CAROUSEL["position"]))
             _CAROUSEL["target"] = None
+            _CAROUSEL["generation"] += 1
+        elif changed_focus:
+            # Discard any animation frame composed with the previous focus.
             _CAROUSEL["generation"] += 1
         if changed_settings:
             _CAROUSEL["next_auto"] = time.monotonic() + interval
@@ -826,6 +834,7 @@ def _carousel_worker():
         with _CAROUSEL_LOCK:
             items = list(_CAROUSEL["items"])
             view = _CAROUSEL["view"]
+            carousel_focused = bool(_CAROUSEL["focused"])
             target = _CAROUSEL["target"]
             enabled = bool(_CAROUSEL["autoplay"])
             next_auto = float(_CAROUSEL["next_auto"])
@@ -881,7 +890,7 @@ def _carousel_worker():
                     break
                 draw_items = list(_CAROUSEL["items"])
             try:
-                strip = _draw_carousel_strip(draw_items, position)
+                strip = _draw_carousel_strip(draw_items, position, focused=carousel_focused)
             except Exception as exc:
                 with _CAROUSEL_LOCK:
                     if _CAROUSEL["generation"] == generation:
@@ -955,7 +964,7 @@ def _draw_home(canvas, state):
     nav_selected = int(state.get("nav_selected", 0))
     carousel_items = state.get("carousel_games", [])
     carousel_position = float(state.get("carousel_index", 0) or 0)
-    strip = _draw_carousel_strip(carousel_items, carousel_position)
+    strip = _draw_carousel_strip(carousel_items, carousel_position, focused=(focus == "carousel"))
     canvas.paste(strip, (0, 70))
 
     _label(d, (54, 370), "QUICK ACCESS", 12, MUTED, True)
@@ -1821,7 +1830,8 @@ def render(state, log_fn=None):
             if abs(current_position - rendered_position) >= 0.01:
                 try:
                     current_strip = _draw_carousel_strip(
-                        list(_CAROUSEL["items"]), current_position
+                        list(_CAROUSEL["items"]), current_position,
+                        focused=(str(state.get("home_focus", "carousel")) == "carousel"),
                     )
                     pitv_framebuffer.display_image_region(
                         current_strip, (0, 70, WIDTH, 365), source_size=(WIDTH, HEIGHT)
