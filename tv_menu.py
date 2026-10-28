@@ -2557,6 +2557,24 @@ def _reset_terminal():
         pass
 
 
+def _clear_screensaver_background():
+    """Clear the full framebuffer before console-based art is drawn.
+
+    The V2 home screen uses a 1280x720 framebuffer image, whereas terminal
+    applications can leave a few pixel rows below the Linux console grid.
+    Clearing the full device prevents those rows from showing the old menu.
+    """
+    if UI_VERSION != "2":
+        return
+    try:
+        pitv_framebuffer.clear_framebuffer()
+    except Exception as exc:
+        log(
+            "Could not clear framebuffer before screensaver: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
 def show_message(stdscr, lines: list, color_pair: int = 4, duration: float = 3.0):
     """Briefly show a centred message block on screen."""
     max_y, max_x = stdscr.getmaxyx()
@@ -2599,6 +2617,7 @@ def run_external_art(stdscr, art_entry, duration):
     curses.def_prog_mode()
     curses.endwin()
     _reset_terminal()
+    _clear_screensaver_background()
 
     try:
         proc = subprocess.Popen(cmd_list, env=env)
@@ -5302,6 +5321,8 @@ def main(stdscr):
                     pitv_tvui.suspend_carousel()
                 except Exception as _carousel_stop_exc:
                     log(f"Carousel suspension failed: {type(_carousel_stop_exc).__name__}")
+            if current_view == "ART_RUNNING":
+                _clear_screensaver_background()
             stdscr.clear()
             reset_renderer_state()
             # A console-based screensaver or game may have overwritten the
@@ -5924,13 +5945,6 @@ def main(stdscr):
                 if should_clear_screen:
                     stdscr.clear(); should_clear_screen = False
                 active_art_type(stdscr, frame)
-                status = (f" {int(art_stop_time-time.time())}s remaining | BACK to exit "
-                          if art_stop_time else " Running indefinitely | BACK to exit ")
-                try:
-                    stdscr.addstr(max_y-1, 0, status.center(max_x-1),
-                                  curses.A_REVERSE|curses.A_DIM)
-                except curses.error:
-                    pass
 
             elif current_view == "CLEAR":
                 pass
