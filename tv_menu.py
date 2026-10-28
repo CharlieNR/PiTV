@@ -3333,8 +3333,11 @@ def run_mirror(stdscr):
                 "-n", "PiTV",
                 "-nh",
                 "-vs", "0",
-                # Disable AirPlay timestamp sync in Audio-only mode. This keeps
-                # audio from video sources from being delayed by the sync buffer.
+                # PiTV displays its own status screen, not the phone's video, so
+                # synchronising audio to mirror-video timestamps only adds latency.
+                # -vsync no covers AAC audio sent in mirror mode; -async no separately
+                # disables timestamp sync for ALAC audio-only mode.
+                "-vsync", "no",
                 "-async", "no",
                 "-md", MUSIC_META,
                 "-dacp", MUSIC_DACP,
