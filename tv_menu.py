@@ -3333,11 +3333,11 @@ def run_mirror(stdscr):
                 "-n", "PiTV",
                 "-nh",
                 "-vs", "0",
-                # PiTV displays its own status screen, not the phone's video, so
-                # synchronising audio to mirror-video timestamps only adds latency.
-                # -vsync no covers AAC audio sent in mirror mode; -async no separately
-                # disables timestamp sync for ALAC audio-only mode.
-                "-vsync", "no",
+                # Keep timestamp synchronisation enabled for mirror-mode audio
+                # (AAC-ELD, e.g. Instagram/video sound) so it stays aligned with the
+                # picture on the phone. -async no is separate and only disables
+                # timestamp synchronisation for ALAC audio-only mode.
+                "-vsync",
                 "-async", "no",
                 "-md", MUSIC_META,
                 "-dacp", MUSIC_DACP,
