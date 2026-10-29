@@ -3162,9 +3162,11 @@ def run_mirror(stdscr):
     UXPLAY_LOG = "/tmp/uxplay.log"
     MUSIC_DACP = "/tmp/pitv-uxplay-dacp"
     MUSIC_META = "/tmp/pitv-uxplay-metadata"
+    SHAIRPORT_LOG = "/tmp/shairport-sync.log"
+    SHAIRPORT_META_PIPE = "/tmp/pitv-shairport-metadata"
 
     def _cleanup_files():
-        for path in (MUSIC_DACP, MUSIC_META):
+        for path in (MUSIC_DACP, MUSIC_META, SHAIRPORT_META_PIPE):
             try:
                 os.remove(path)
             except FileNotFoundError:
@@ -3224,6 +3226,236 @@ def run_mirror(stdscr):
                     break
 
         return title, artist
+
+    # Prefer Shairport Sync's AirPlay 2 receiver when the deployment has
+    # installed it. Its Buffered Audio support can start much sooner than
+    # UxPlay's legacy realtime/ALAC audio path; the sender still chooses which
+    # AirPlay stream type to use. UxPlay remains the safe fallback.
+    backend = "uxplay"
+    metadata_stop = None
+    metadata_thread = None
+    metadata_fd = None
+    shairport_state = {
+        "connected": False,
+        "device": "",
+        "title": "",
+        "artist": "",
+    }
+    shairport_state_lock = threading.Lock()
+
+    def _read_shairport_metadata(fd, stop_event):
+        import base64
+        import select
+        import xml.etree.ElementTree as ET
+
+        pending = b""
+
+        def _decode_hex(value):
+            try:
+                return bytes.fromhex(value.strip()).decode("ascii", errors="replace")
+            except (ValueError, UnicodeError):
+                return ""
+
+        def _consume_item(raw_item):
+            try:
+                root = ET.fromstring(raw_item)
+                item_type = _decode_hex(root.findtext("type", ""))
+                code = _decode_hex(root.findtext("code", ""))
+                encoded_data = root.findtext("data", "") or ""
+                data = base64.b64decode(encoded_data).decode("utf-8", errors="replace").strip()
+            except Exception:
+                return
+
+            with shairport_state_lock:
+                if item_type == "core":
+                    if code == "minm":
+                        shairport_state["title"] = data
+                    elif code == "asar":
+                        shairport_state["artist"] = data
+                elif item_type == "ssnc":
+                    if code == "snam":
+                        shairport_state["device"] = data
+                        shairport_state["connected"] = True
+                    elif code in ("conn", "clip", "pbeg", "prsm"):
+                        shairport_state["connected"] = True
+                        if code == "pbeg":
+                            shairport_state["title"] = ""
+                            shairport_state["artist"] = ""
+                    elif code == "disc":
+                        shairport_state["connected"] = False
+                        shairport_state["device"] = ""
+                        shairport_state["title"] = ""
+                        shairport_state["artist"] = ""
+
+        while not stop_event.is_set():
+            try:
+                readable, _, _ = select.select([fd], [], [], 0.2)
+            except (OSError, ValueError):
+                return
+            if not readable:
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                continue
+            except OSError:
+                return
+            if not chunk:
+                time.sleep(0.05)
+                continue
+
+            pending += chunk
+            while True:
+                start = pending.find(b"<item>")
+                if start < 0:
+                    # Keep only enough trailing bytes to detect a split opener.
+                    pending = pending[-8:]
+                    break
+                if start:
+                    pending = pending[start:]
+                end = pending.find(b"</item>")
+                if end < 0:
+                    break
+                item = pending[:end + len(b"</item>")]
+                pending = pending[end + len(b"</item>"):]
+                _consume_item(item)
+
+    def _stop_shairport_metadata_reader():
+        nonlocal metadata_stop, metadata_thread, metadata_fd
+        if metadata_stop is not None:
+            metadata_stop.set()
+        if metadata_thread is not None:
+            metadata_thread.join(timeout=1.0)
+        if metadata_fd is not None:
+            try:
+                os.close(metadata_fd)
+            except OSError:
+                pass
+        metadata_stop = None
+        metadata_thread = None
+        metadata_fd = None
+        try:
+            os.remove(SHAIRPORT_META_PIPE)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    def _start_shairport():
+        nonlocal proc, logf, backend, metadata_stop, metadata_thread, metadata_fd
+        shairport_bin = resolve_binary("shairport-sync")
+        if not shairport_bin:
+            return False
+
+        try:
+            os.mkfifo(SHAIRPORT_META_PIPE, 0o600)
+            # Opening both FIFO ends prevents EOF spin before the receiver
+            # connects, while keeping reads non-blocking.
+            metadata_fd = os.open(
+                SHAIRPORT_META_PIPE, os.O_RDWR | os.O_NONBLOCK
+            )
+            metadata_stop = threading.Event()
+            metadata_thread = threading.Thread(
+                target=_read_shairport_metadata,
+                args=(metadata_fd, metadata_stop),
+                name="pitv-shairport-metadata",
+                daemon=True,
+            )
+            metadata_thread.start()
+            logf = open(SHAIRPORT_LOG, "w", encoding="utf-8")
+            proc = subprocess.Popen(
+                [
+                    shairport_bin,
+                    "-a", "PiTV",
+                    "--service-type=airplay2",
+                    "-o", "alsa",
+                    "-M",
+                    f"--metadata-pipename={SHAIRPORT_META_PIPE}",
+                ],
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+            )
+
+            # Catch missing AirPlay 2/NQPTP support immediately and fall back
+            # instead of leaving Stream Music in a non-functional state.
+            deadline = time.monotonic() + 0.8
+            while time.monotonic() < deadline and proc.poll() is None:
+                time.sleep(0.05)
+            if proc.poll() is not None:
+                log(
+                    "Shairport Sync failed during startup "
+                    f"(exit={proc.returncode}); falling back to UxPlay."
+                )
+                proc = None
+                if logf not in (None, subprocess.DEVNULL):
+                    try:
+                        logf.close()
+                    except OSError:
+                        pass
+                logf = None
+                _stop_shairport_metadata_reader()
+                return False
+
+            backend = "shairport"
+            log("Music receiver: using Shairport Sync AirPlay 2 backend")
+            return True
+        except Exception as exc:
+            log(
+                "Shairport Sync could not start; falling back to UxPlay: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+            proc = None
+            if logf not in (None, subprocess.DEVNULL):
+                try:
+                    logf.close()
+                except OSError:
+                    pass
+            logf = None
+            _stop_shairport_metadata_reader()
+            return False
+
+    def _start_uxplay():
+        nonlocal proc, logf, backend
+        uxplay_bin = resolve_binary("uxplay")
+        if not uxplay_bin:
+            show_message(
+                stdscr,
+                ["AIRPLAY RECEIVER NOT INSTALLED", "",
+                 "Neither Shairport Sync nor UxPlay could be started."],
+                color_pair=1,
+                duration=5.0,
+            )
+            return False
+
+        logf = open(UXPLAY_LOG, "w", encoding="utf-8")
+        log("Music receiver: starting UxPlay audio-only fallback")
+        proc = subprocess.Popen(
+            [
+                "stdbuf", "-oL", "-eL",
+                uxplay_bin,
+                "-n", "PiTV",
+                "-nh",
+                "-vs", "0",
+                "-vsync",
+                "-async", "no",
+                "-md", MUSIC_META,
+                "-dacp", MUSIC_DACP,
+                "-d", "1",
+            ],
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+        )
+        backend = "uxplay"
+        return True
 
     graphic_music_active = (
         UI_VERSION == "2"
@@ -3312,40 +3544,10 @@ def run_mirror(stdscr):
     stopped_by_user = False
 
     try:
-        uxplay_bin = resolve_binary("uxplay")
-        if not uxplay_bin:
-            show_message(stdscr,
-                         ["UXPLAY NOT INSTALLED", "",
-                          "Run firmware update to install UxPlay."],
-                         color_pair=1, duration=5.0)
-            return
-
-        try:
-            logf = open(UXPLAY_LOG, "w", encoding="utf-8")
-        except OSError:
-            logf = subprocess.DEVNULL
-
-        log("Music receiver: starting UxPlay audio-only mode")
-        proc = subprocess.Popen(
-            [
-                "stdbuf", "-oL", "-eL",
-                uxplay_bin,
-                "-n", "PiTV",
-                "-nh",
-                "-vs", "0",
-                # Keep timestamp synchronisation enabled for mirror-mode audio
-                # (AAC-ELD, e.g. Instagram/video sound) so it stays aligned with the
-                # picture on the phone. -async no is separate and only disables
-                # timestamp synchronisation for ALAC audio-only mode.
-                "-vsync",
-                "-async", "no",
-                "-md", MUSIC_META,
-                "-dacp", MUSIC_DACP,
-                "-d", "1",
-            ],
-            stdout=logf,
-            stderr=subprocess.STDOUT,
-        )
+        if not _start_shairport():
+            _cleanup_files()
+            if not _start_uxplay():
+                return
 
         stdscr.nodelay(True)
         controller_mode = "MENU"
@@ -3377,9 +3579,16 @@ def run_mirror(stdscr):
             except curses.error:
                 pass
 
-            connected = os.path.exists(MUSIC_DACP)
-            device = _device_name() if connected else ""
-            title, artist = _metadata() if connected else ("", "")
+            if backend == "shairport":
+                with shairport_state_lock:
+                    connected = bool(shairport_state["connected"])
+                    device = str(shairport_state["device"])
+                    title = str(shairport_state["title"])
+                    artist = str(shairport_state["artist"])
+            else:
+                connected = os.path.exists(MUSIC_DACP)
+                device = _device_name() if connected else ""
+                title, artist = _metadata() if connected else ("", "")
             _draw(stdscr, connected, device, title, artist)
             time.sleep(0.20)
 
@@ -3401,6 +3610,7 @@ def run_mirror(stdscr):
                 logf.close()
             except OSError:
                 pass
+        _stop_shairport_metadata_reader()
         _cleanup_files()
         # Return to the main menu's non-blocking input mode. Leaving nodelay
         # disabled makes the main loop appear frozen until another key arrives.
