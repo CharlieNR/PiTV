@@ -3145,16 +3145,13 @@ def run_mirror(stdscr):
     """
     AirPlay music receiver and status screen.
 
-    UxPlay is deliberately run with `-vs 0`, which disables video output while
-    retaining AirPlay audio reception. This means the Pi never decodes, scales
-    or draws the phone display, so the TV only shows the PiTV music status UI.
+    Prefer Shairport Sync's AirPlay 2 receiver to support Buffered Audio when
+    the source selects it. Keep UxPlay as a fallback for compatibility. Both
+    receivers send audio only here; PiTV keeps rendering its own music screen.
 
-    UxPlay writes:
+    Shairport Sync sends metadata through a FIFO. UxPlay writes:
       - `-dacp` file: transient while an AirPlay client is connected.
       - `-md` file: current audio metadata supplied by the client.
-
-    The curses screen remains active because there is no video sink competing
-    for the framebuffer.
     """
     global controller_mode
     if UI_VERSION == "2" and GRAPHIC_UI_AVAILABLE and pitv_tvui is not None:
@@ -3565,7 +3562,7 @@ def run_mirror(stdscr):
                 break
 
             if proc.poll() is not None:
-                log(f"Music receiver: UxPlay exited with code {proc.returncode}")
+                log(f"Music receiver: {backend} exited with code {proc.returncode}")
                 proc = None
                 _draw(stdscr, False, "", "", "")
                 time.sleep(1)
