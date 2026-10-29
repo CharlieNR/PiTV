@@ -269,6 +269,133 @@ sudo usermod -aG pitv "$PITV_USER" 2>/dev/null || true
 sudo systemctl stop pitv-menu.service pitv-guest.service pitv-admin.service 2>/dev/null || true
 PITV_SERVICES_STOPPED=1
 
+# ── Low-latency AirPlay 2 backend for Stream Music ──────────────────
+# UxPlay remains the fallback. Shairport Sync can negotiate AirPlay 2
+# Buffered Audio, which can start sooner than classic/realtime AirPlay audio.
+# NQPTP 1.2.9 (SMI v11) is the matching timing daemon required by Shairport
+# Sync 5.6.x. Build both only when the installed versions/features are missing.
+PITV_SOURCE_DIR="$(pwd)"
+NQPTP_VERSION="1.2.9"
+SHAIRPORT_VERSION="5.6.2"
+NQPTP_BIN="/usr/local/bin/nqptp"
+SHAIRPORT_BIN="/usr/local/bin/shairport-sync"
+
+NQPTP_REPORT=""
+if [ -x "$NQPTP_BIN" ]; then
+    NQPTP_REPORT="$("$NQPTP_BIN" -V 2>&1 || true)"
+fi
+SHAIRPORT_REPORT=""
+SHAIRPORT_HELP=""
+if [ -x "$SHAIRPORT_BIN" ]; then
+    SHAIRPORT_REPORT="$("$SHAIRPORT_BIN" -V 2>&1 || true)"
+    SHAIRPORT_HELP="$("$SHAIRPORT_BIN" -h 2>&1 || true)"
+fi
+
+NQPTP_READY=0
+if [[ "$NQPTP_REPORT" == *"Version: $NQPTP_VERSION"* && "$NQPTP_REPORT" == *"smi11"* ]]; then
+    NQPTP_READY=1
+fi
+SHAIRPORT_READY=0
+if [[ "$SHAIRPORT_REPORT" == *"$SHAIRPORT_VERSION"* \
+      && "$SHAIRPORT_HELP" == *"--service-type"* \
+      && "$SHAIRPORT_HELP" == *"--metadata-pipename"* \
+      && "$SHAIRPORT_HELP" == *"--metadata-enable"* ]]; then
+    SHAIRPORT_READY=1
+fi
+
+if [ "$NQPTP_READY" -ne 1 ] || [ "$SHAIRPORT_READY" -ne 1 ]; then
+    echo "Installing the build dependencies for Shairport Sync / NQPTP..."
+    sudo apt-get update -qq
+    sudo apt-get install -y --no-install-recommends \
+        build-essential git autoconf automake libtool pkg-config \
+        libpopt-dev libconfig-dev libasound2-dev avahi-daemon libavahi-client-dev \
+        libssl-dev libsoxr-dev libplist-dev libsodium-dev uuid-dev libgcrypt-dev \
+        xxd libplist-utils libavutil-dev libavcodec-dev libavformat-dev
+fi
+
+if [ "$NQPTP_READY" -ne 1 ]; then
+    echo "Building NQPTP $NQPTP_VERSION (required for Shairport Sync AirPlay 2)..."
+    sudo systemctl disable --now shairport-sync.service 2>/dev/null || true
+    rm -rf /tmp/pitv-nqptp-build
+    git clone --depth 1 --branch "$NQPTP_VERSION" \
+        https://github.com/mikebrady/nqptp.git /tmp/pitv-nqptp-build
+    cd /tmp/pitv-nqptp-build
+    autoreconf -fi
+    ./configure
+    make -j2
+    sudo make install
+    cd "$PITV_SOURCE_DIR"
+    rm -rf /tmp/pitv-nqptp-build
+
+    NQPTP_REPORT="$("$NQPTP_BIN" -V 2>&1 || true)"
+    if [[ "$NQPTP_REPORT" != *"Version: $NQPTP_VERSION"* || "$NQPTP_REPORT" != *"smi11"* ]]; then
+        echo "ERROR: NQPTP $NQPTP_VERSION did not install correctly."
+        echo "$NQPTP_REPORT"
+        exit 1
+    fi
+fi
+
+# Install the upstream service policy even when NQPTP was already present.
+# Shairport Sync is deliberately NOT a service: PiTV starts it only while the
+# viewer is in Stream Music, so the AirPlay receiver is not always advertised.
+sudo tee /etc/systemd/system/nqptp.service >/dev/null <<'NQPTP_UNIT'
+[Unit]
+Description=NQPTP -- Not Quite PTP
+Wants=network-online.target
+After=network.target network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/nqptp
+DynamicUser=yes
+LimitRTPRIO=6
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+NQPTP_UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable nqptp.service >/dev/null
+if [ "$NQPTP_READY" -ne 1 ]; then
+    sudo systemctl restart nqptp.service
+else
+    sudo systemctl start nqptp.service
+fi
+sleep 1
+if ! sudo systemctl is-active --quiet nqptp.service; then
+    echo "ERROR: NQPTP is not active; AirPlay 2 timing cannot be provided."
+    sudo systemctl status nqptp.service --no-pager || true
+    exit 1
+fi
+
+if [ "$SHAIRPORT_READY" -ne 1 ]; then
+    echo "Building Shairport Sync $SHAIRPORT_VERSION with AirPlay 2 and metadata-pipe support..."
+    sudo systemctl disable --now shairport-sync.service 2>/dev/null || true
+    rm -rf /tmp/pitv-shairport-sync-build
+    git clone --depth 1 --branch "$SHAIRPORT_VERSION" \
+        https://github.com/mikebrady/shairport-sync.git /tmp/pitv-shairport-sync-build
+    cd /tmp/pitv-shairport-sync-build
+    autoreconf -fi
+    ./configure --sysconfdir=/etc --with-alsa --with-soxr --with-avahi \
+        --with-ssl=openssl --with-airplay-2 --with-metadata --with-metadata-pipe
+    make -j2
+    sudo make install
+    cd "$PITV_SOURCE_DIR"
+    rm -rf /tmp/pitv-shairport-sync-build
+
+    SHAIRPORT_REPORT="$("$SHAIRPORT_BIN" -V 2>&1 || true)"
+    SHAIRPORT_HELP="$("$SHAIRPORT_BIN" -h 2>&1 || true)"
+    if [[ "$SHAIRPORT_REPORT" != *"$SHAIRPORT_VERSION"* \
+          || "$SHAIRPORT_HELP" != *"--service-type"* \
+          || "$SHAIRPORT_HELP" != *"--metadata-pipename"* \
+          || "$SHAIRPORT_HELP" != *"--metadata-enable"* ]]; then
+        echo "ERROR: Shairport Sync did not install with the required AirPlay 2/metadata support."
+        echo "$SHAIRPORT_REPORT"
+        exit 1
+    fi
+fi
+
+echo "Low-latency backend ready: Shairport Sync $SHAIRPORT_VERSION; NQPTP $NQPTP_VERSION."
+
 # Populate the persistent icon PNG cache while deployment is in progress.
 # This prevents a first-use CairoSVG rasterisation from blocking TV rendering.
 echo "Preparing the PiTV V2 icon cache..."
